@@ -12,6 +12,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.reactive.AutoConfigureWebTestClient;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.test.web.reactive.server.WebTestClient;
 
 /**
@@ -47,6 +48,9 @@ class GatewayAuthorisationTest {
 
     @Autowired
     private WebTestClient webClient;
+
+    @Autowired
+    private org.springframework.cloud.gateway.config.GlobalCorsProperties corsProperties;
 
     @ParameterizedTest(name = "{0} as {1} is {2}")
     @CsvSource({
@@ -86,7 +90,44 @@ class GatewayAuthorisationTest {
         "/api/v1/fraud/summary, AUDITOR, 200",
         "/api/v1/fraud/summary, PLATFORM_ADMIN, 200",
         "/api/v1/fraud/summary, CUSTOMER, 403",
-        "/api/v1/fraud/summary, SUPPORT_AGENT, 403"
+        "/api/v1/fraud/summary, SUPPORT_AGENT, 403",
+        // Settlement reads. The customer rows are the ones that matter: until SETTLEMENT_PATH existed,
+        // every one of these was refused by the denyAll fallback rather than by a settlement rule, so
+        // the customer check passed for the wrong reason and the operator check failed with a 403 that
+        // read like a missing role. Only the operator rows could have told the difference.
+        "/api/v1/settlement/cycles, SETTLEMENT_OPERATOR, 200",
+        "/api/v1/settlement/cycles, COMPLIANCE_OFFICER, 200",
+        "/api/v1/settlement/cycles, AUDITOR, 200",
+        "/api/v1/settlement/cycles, PLATFORM_ADMIN, 200",
+        "/api/v1/settlement/cycles, CUSTOMER, 403",
+        "/api/v1/settlement/cycles, SUPPORT_AGENT, 403",
+        // The delivery log. A customer row that read 200 would mean the gateway had admitted a
+        // caller this service cannot scope to their own messages; an auditor row at 200 would
+        // hand a join key into another service's pseudonyms to a role that never needed it.
+        "/api/v1/notifications, SUPPORT_AGENT, 200",
+        "/api/v1/notifications, PLATFORM_ADMIN, 200",
+        "/api/v1/notifications, CUSTOMER, 403",
+        "/api/v1/notifications, AUDITOR, 403",
+        "/api/v1/notifications, COMPLIANCE_OFFICER, 403",
+        "/api/v1/notifications, SETTLEMENT_OPERATOR, 403",
+        // The trail. Until the audit route existed, every one of these was refused by the denyAll
+        // fallback rather than by the audit rule, so the auditor check passed for the wrong reason.
+        // The analyst and operator rows are the ones that matter: the trail records their actions.
+        "/api/audit/records, AUDITOR, 200",
+        "/api/audit/records, COMPLIANCE_OFFICER, 200",
+        "/api/audit/records, PLATFORM_ADMIN, 200",
+        "/api/audit/records, CUSTOMER, 403",
+        "/api/audit/records, SUPPORT_AGENT, 403",
+        "/api/audit/records, FRAUD_ANALYST, 403",
+        "/api/audit/records, SETTLEMENT_OPERATOR, 403",
+        // The chargeback workflow. The customer rows are the ones that matter: a customer who
+        // cannot reach their own cases has no dispute path at all, and the service — not the
+        // gateway — is what keeps them to their own.
+        "/api/v1/disputes, CUSTOMER, 200",
+        "/api/v1/disputes, SUPPORT_AGENT, 200",
+        "/api/v1/disputes, PLATFORM_ADMIN, 200",
+        "/api/v1/disputes, AUDITOR, 403",
+        "/api/v1/disputes, FRAUD_ANALYST, 403"
     })
     @DisplayName("per-route authorisation follows the policy table")
     void authorises_by_role(String path, String role, int expectedStatus) {
@@ -94,6 +135,62 @@ class GatewayAuthorisationTest {
                 .exchange()
                 .expectStatus()
                 .isEqualTo(expectedStatus);
+    }
+
+    @ParameterizedTest(name = "{0} {1} as {2} is {3}")
+    @CsvSource({
+        // The write half of the settlement policy, which the GET-only matrix above cannot reach.
+        // Declaring an actual and closing a period are the acts that move money, so the reader roles
+        // are refused here even though they may read the very statement they are not allowed to change.
+        "/api/v1/settlement/cycles/SETTLE-2026-09-27-USD/close, SETTLEMENT_OPERATOR, 200",
+        "/api/v1/settlement/cycles/SETTLE-2026-09-27-USD/close, PLATFORM_ADMIN, 200",
+        "/api/v1/settlement/cycles/SETTLE-2026-09-27-USD/close, AUDITOR, 403",
+        "/api/v1/settlement/cycles/SETTLE-2026-09-27-USD/close, COMPLIANCE_OFFICER, 403",
+        "/api/v1/settlement/cycles/SETTLE-2026-09-27-USD/close, CUSTOMER, 403",
+        "/api/v1/settlement/cycles/SETTLE-2026-09-27-USD/close, SUPPORT_AGENT, 403",
+        "/api/v1/settlement/cycles/SETTLE-2026-09-27-USD/reconciliation, SETTLEMENT_OPERATOR, 200",
+        "/api/v1/settlement/cycles/SETTLE-2026-09-27-USD/reconciliation, AUDITOR, 403"
+    })
+    @DisplayName("settlement writes are refused to the roles that may only read")
+    void settlement_writes_are_operator_only(String path, String role, int expectedStatus) {
+        post(path, tokens.tokenFor(role, "fintech-api"))
+                .exchange()
+                .expectStatus()
+                .isEqualTo(expectedStatus);
+    }
+
+    @Test
+    @DisplayName("a preflight is permitted without credentials, because browsers send none with it")
+    void preflight_is_permitted() {
+        // A preflight carries Origin and Access-Control-Request-Method and no Authorization
+        // header — by specification, not by omission — so the security chain cannot authenticate
+        // it and must not try. Without the OPTIONS rule this answers 401, and every browser
+        // caller breaks while the actual request underneath stays authenticated. The 200 here
+        // comes from the downstream stub: the stub runs after the security chain, so reaching it
+        // proves the chain let the preflight through. Which origins get headers back is the CORS
+        // configuration's job, asserted on the configuration itself below and observed live.
+        webClient
+                .options()
+                .uri("/api/v1/transactions")
+                .header(HttpHeaders.ORIGIN, "http://localhost:3001")
+                .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "POST")
+                .header(HttpHeaders.ACCESS_CONTROL_REQUEST_HEADERS, "authorization,content-type,idempotency-key")
+                .exchange()
+                .expectStatus()
+                .isOk();
+    }
+
+    @Test
+    @DisplayName("exactly the web UI origin is CORS-allowed, and never a wildcard")
+    void cors_allows_only_the_ui_origin() {
+        // The header behaviour belongs to Spring Cloud Gateway and is observed live; what this
+        // pins is our half of it — the enumerated origin. `allowedOrigins: "*"` would answer
+        // every site's preflight, and the failure would be silent approval rather than a loud
+        // refusal, so the absence of the wildcard is the assertion that matters.
+        var configs = corsProperties.getCorsConfigurations();
+        assertThat(configs).containsKey("/api/**");
+        var allowed = configs.get("/api/**").getAllowedOrigins();
+        assertThat(allowed).containsExactly("http://localhost:3001");
     }
 
     @Test
@@ -275,6 +372,22 @@ class GatewayAuthorisationTest {
 
     private WebTestClient.RequestHeadersSpec<?> get(String path, String token) {
         return webClient.get().uri(path).header(HttpHeaders.AUTHORIZATION, "Bearer " + token);
+    }
+
+    /**
+     * A POST with no body.
+     *
+     * <p>The gateway authorises before routing, so the body never matters here and leaving it empty
+     * keeps the test on the security chain. These rows assert the status the security chain produces; a
+     * 200 means the request was authorised and forwarded, and what the settlement service then says
+     * about a missing body is that service's business.
+     */
+    private WebTestClient.RequestHeadersSpec<?> post(String path, String token) {
+        return webClient
+                .post()
+                .uri(path)
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                .contentType(MediaType.APPLICATION_JSON);
     }
 
     private static Date future() {

@@ -64,7 +64,11 @@
       },
       {
         "name": "FRAUD_ANALYST",
-        "description": "Works the fraud alert queue: claims alerts, closes them, re-scores payments and overrules scores up to the configured cap. Deliberately separate from COMPLIANCE_OFFICER, who supervises the queue without being able to work it \u2014 an auditor who could claim an alert would be editing the evidence they audit."
+        "description": "Works the fraud alert queue: claims alerts, closes them, re-scores payments and overrules scores up to the configured cap. Separate from COMPLIANCE_OFFICER, who supervises without working it."
+      },
+      {
+        "name": "SETTLEMENT_OPERATOR",
+        "description": "Closes settlement cycles, declares an actual for a period, and works reconciliation breaks. Separate from the reader roles (AUDITOR, COMPLIANCE_OFFICER) on purpose: an auditor who could close a period could stop being one."
       }
     ]
   },
@@ -109,6 +113,7 @@
       ],
       "webOrigins": [
         "http://localhost:3000",
+        "http://localhost:3001",
         "http://localhost:8081"
       ],
       "optionalClientScopes": [
@@ -253,6 +258,24 @@
       ],
       "realmRoles": [
         "FRAUD_ANALYST"
+      ]
+    },
+    {
+      "username": "settlement@fintech.test",
+      "email": "settlement@fintech.test",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Sam",
+      "lastName": "Settlement",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "fintech-dev-only",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "SETTLEMENT_OPERATOR"
       ]
     }
   ]

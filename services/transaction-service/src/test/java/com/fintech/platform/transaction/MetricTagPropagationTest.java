@@ -6,6 +6,7 @@ import com.fintech.platform.transaction.persistence.IdempotencyRepository;
 import com.fintech.platform.transaction.persistence.JournalEntryRepository;
 import com.fintech.platform.transaction.persistence.LedgerAccountRepository;
 import com.fintech.platform.transaction.persistence.OutboxRepository;
+import com.fintech.platform.transaction.persistence.ProcessedEventRepository;
 import com.fintech.platform.transaction.persistence.TransactionRepository;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.junit.jupiter.api.DisplayName;
@@ -75,6 +76,9 @@ class MetricTagPropagationTest {
 
     @MockitoBean
     private OutboxRepository outboxRepository;
+
+    @MockitoBean
+    private ProcessedEventRepository processedEventRepository;
 
     @MockitoBean
     private TransactionRepository transactionRepository;

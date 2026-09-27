@@ -57,6 +57,7 @@ APPLICATION_SERVICES = {
     "notification-service",
     "audit-service",
     "dispute-service",
+    "settlement-service",
 }
 
 missing = APPLICATION_SERVICES - set(services)

@@ -140,13 +140,32 @@ check-secrets: ## Assert no service is handed another component's secret
 # before it is proposed -- in a CI job with no Compose, a target that requires one is a red build
 # that means nothing. Run them against a live stack, not in the gate.
 .PHONY: verify-live
-verify-live: ## Assert the card, payment and fraud lifecycles end to end against a running stack
+verify-live: ## Assert the card, payment, fraud, settlement, notification, audit, dispute and frontend lifecycles end to end against a running stack
 	@echo "> ./scripts/verify-card-lifecycle.sh"
 	@./scripts/verify-card-lifecycle.sh
 	@echo "> ./scripts/verify-payment-lifecycle.sh"
 	@./scripts/verify-payment-lifecycle.sh
 	@echo "> ./scripts/verify-fraud-lifecycle.sh"
 	@./scripts/verify-fraud-lifecycle.sh
+	@echo "> ./scripts/verify-settlement-lifecycle.sh"
+	@./scripts/verify-settlement-lifecycle.sh
+	@echo "> ./scripts/verify-notification-lifecycle.sh"
+	@./scripts/verify-notification-lifecycle.sh
+	@echo "> ./scripts/verify-audit-lifecycle.sh"
+	@./scripts/verify-audit-lifecycle.sh
+	@echo "> ./scripts/verify-dispute-lifecycle.sh"
+	@./scripts/verify-dispute-lifecycle.sh
+	@echo "> ./scripts/verify-frontend-lifecycle.sh"
+	@./scripts/verify-frontend-lifecycle.sh
+
+# ---------------------------------------------------------------------------------------------
+# Web frontend
+# ---------------------------------------------------------------------------------------------
+
+.PHONY: web-test
+web-test: ## Run the web UI unit tests (no Docker required)
+	@echo "> npm test in web/"
+	@cd web && npm test --silent
 
 .PHONY: check-prometheus
 check-prometheus: ## Validate the Prometheus config and alert rules with promtool

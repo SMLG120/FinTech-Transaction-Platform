@@ -8,6 +8,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.convert.converter.Converter;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.server.reactive.ServerHttpResponse;
@@ -76,6 +77,9 @@ class GatewaySecurityConfiguration {
     private static final String COMPLIANCE_PATH = "/api/compliance/**";
     private static final String AUDIT_PATH = "/api/audit/**";
     private static final String FRAUD_PATH = "/api/v1/fraud/**";
+    private static final String SETTLEMENT_PATH = "/api/v1/settlement/**";
+    private static final String NOTIFICATION_PATH = "/api/v1/notifications/**";
+    private static final String DISPUTE_PATH = "/api/v1/disputes/**";
     private static final String ANY_AUTHENTICATED_PATH = "/api/**";
 
     private static final String ROLE_PLATFORM_ADMIN = "PLATFORM_ADMIN";
@@ -83,6 +87,7 @@ class GatewaySecurityConfiguration {
     private static final String ROLE_COMPLIANCE_OFFICER = "COMPLIANCE_OFFICER";
     private static final String ROLE_AUDITOR = "AUDITOR";
     private static final String ROLE_FRAUD_ANALYST = "FRAUD_ANALYST";
+    private static final String ROLE_SETTLEMENT_OPERATOR = "SETTLEMENT_OPERATOR";
     private static final String ROLE_CUSTOMER = "CUSTOMER";
 
     private static final String UNAUTHORIZED_BODY = """
@@ -160,6 +165,13 @@ class GatewaySecurityConfiguration {
                 // presents ambient credentials, so there is no CSRF vector to protect against.
                 .csrf(ServerHttpSecurity.CsrfSpec::disable)
                 .authorizeExchange(exchanges -> exchanges
+                        // Preflights carry no credentials by specification — the browser sends
+                        // Origin and Access-Control-Request-Method and nothing else — so there is
+                        // no identity to verify and nothing to deny. Refusing them breaks every
+                        // browser caller without adding security: the actual request that follows
+                        // is still authenticated below. This rule is first because it must be.
+                        .pathMatchers(HttpMethod.OPTIONS, "/**")
+                        .permitAll()
                         .pathMatchers(OPERATIONAL_ENDPOINTS)
                         .permitAll()
 
@@ -191,6 +203,43 @@ class GatewaySecurityConfiguration {
                         // the same reason an auditor cannot claim an alert.
                         .pathMatchers(FRAUD_PATH)
                         .hasAnyRole(ROLE_FRAUD_ANALYST, ROLE_COMPLIANCE_OFFICER, ROLE_AUDITOR, ROLE_PLATFORM_ADMIN)
+
+                        // Settlement, split by method because a statement and the decision to close a
+                        // period are not the same request. Reading a statement is how an auditor does
+                        // their job; closing one is an act with financial consequences, and the reader
+                        // roles are kept off it for the same reason they are kept off the fraud queue --
+                        // an auditor who can close a period can stop being one, which is a conflict of
+                        // interest rather than a permission.
+                        //
+                        // Two rules rather than a role hierarchy because the two sets are not nested:
+                        // COMPLIANCE_OFFICER may read a statement without appearing anywhere near
+                        // declaring an actual against it.
+                        //
+                        // The GET rule must precede the write rule. Both match the same path, and the
+                        // first match wins, so a write rule placed above it would make every read 403.
+                        .pathMatchers(HttpMethod.GET, SETTLEMENT_PATH)
+                        .hasAnyRole(
+                                ROLE_SETTLEMENT_OPERATOR, ROLE_COMPLIANCE_OFFICER, ROLE_AUDITOR, ROLE_PLATFORM_ADMIN)
+                        .pathMatchers(SETTLEMENT_PATH)
+                        .hasAnyRole(ROLE_SETTLEMENT_OPERATOR, ROLE_PLATFORM_ADMIN)
+
+                        // The delivery log. One role set for reads and retries, because answering "was
+                        // the customer told" and "tell them again" are the same support job: a role
+                        // that may see a failed delivery but may not retry it is a queue that fills
+                        // and nobody empties. No customer access, for the stronger reason stated on the
+                        // route: this service cannot scope a notification to its caller, so a
+                        // per-customer rule would be enforced by nothing.
+                        .pathMatchers(NOTIFICATION_PATH)
+                        .hasAnyRole(ROLE_SUPPORT_AGENT, ROLE_PLATFORM_ADMIN)
+
+                        // The chargeback workflow. Listed even though the catch-all below admits the
+                        // same three roles, because "admitted by the catch-all" is an accident of
+                        // ordering rather than a decision: if the catch-all ever narrowed, disputes
+                        // would silently close to customers with no line in this file saying they
+                        // should be open. The ownership inside — opener vs staff — lives in the
+                        // service, which is the only place that can see whose case an id names.
+                        .pathMatchers(DISPUTE_PATH)
+                        .hasAnyRole(ROLE_CUSTOMER, ROLE_SUPPORT_AGENT, ROLE_PLATFORM_ADMIN)
 
                         // The customer surface: callers who act on a customer's behalf. Audit and
                         // compliance are deliberately absent — they read the record, they do not operate

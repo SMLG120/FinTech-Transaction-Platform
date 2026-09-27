@@ -91,8 +91,8 @@ public class KafkaErrorHandlingConfiguration {
     /**
      * The dead-letter topic this service publishes to, as a bean.
      *
-     * <p>Exposed so the topic name has one source in Java. The constant and the configured value are
-     * asserted equal by {@code KafkaErrorHandlingConfigurationTest}, because a configuration file and a
+     * <p>Exposed so the topic name has one source in Java. {@code FraudDeadLetterPropertiesTest} asserts
+     * that this bean equals {@code KafkaTopics.DEAD_LETTER_EVENTS}, because a configuration file and a
      * Java constant drifting apart produces a consumer that parks events on a topic the catalogue does
      * not provision — which fails at the moment of the first poison event, not at startup.
      *

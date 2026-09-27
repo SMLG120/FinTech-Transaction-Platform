@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FinTech — Customer</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header>
+    <h1>FinTech <span class="demo">local demo — synthetic data only, no real money</span></h1>
+    <div id="session"></div>
+  </header>
+  <main>
+    <section id="auth-view">
+      <h2>Sign in</h2>
+      <form id="login-form">
+        <label>Email <input id="login-email" type="email" required autocomplete="username" placeholder="you@fintech.test"></label>
+        <label>Password <input id="login-password" type="password" required autocomplete="current-password"></label>
+        <button type="submit">Sign in</button>
+      </form>
+      <details>
+        <summary>New here? Create an account</summary>
+        <form id="register-form">
+          <label>Full name <input id="reg-name" required placeholder="Dana Okonkwo"></label>
+          <label>Date of birth <input id="reg-dob" type="date" required value="1991-04-17"></label>
+          <label>Email <input id="reg-email" type="email" required placeholder="dana@example.test"></label>
+          <label>Phone <input id="reg-phone" required value="+447700900123"></label>
+          <label>Login password <input id="reg-password" type="password" required autocomplete="new-password"></label>
+          <label>Address line 1 <input id="reg-line1" required value="12 Alder Way"></label>
+          <label>City <input id="reg-city" required value="Manchester"></label>
+          <label>Postal code <input id="reg-postcode" required value="M1 4BT"></label>
+          <button type="submit">Create account</button>
+        </form>
+        <p class="hint">Identity check runs against the synthetic provider with the name you gave.</p>
+      </details>
+      <p id="auth-error" class="error" hidden></p>
+    </section>
+
+    <section id="app-view" hidden>
+      <nav id="tabs">
+        <button data-tab="overview" class="active">Overview</button>
+        <button data-tab="fund">Fund</button>
+        <button data-tab="pay">Pay</button>
+        <button data-tab="cards">Cards</button>
+        <button data-tab="activity">Activity</button>
+        <button data-tab="disputes">Disputes</button>
+        <button id="logout">Sign out</button>
+      </nav>
+
+      <section data-pane="overview">
+        <h2>Overview</h2>
+        <div id="profile"></div>
+        <h3>Balances</h3>
+        <label>Currency
+          <select id="balance-currency">
+            <option>GBP</option><option>USD</option><option>EUR</option>
+          </select>
+        </label>
+        <div id="balances"></div>
+      </section>
+
+      <section data-pane="fund" hidden>
+        <h2>Add funds</h2>
+        <form id="fund-form">
+          <label>Amount <input id="fund-amount" required inputmode="decimal" placeholder="100.00"></label>
+          <label>Currency
+            <select id="fund-currency"><option>GBP</option><option>USD</option><option>EUR</option></select>
+          </label>
+          <button type="submit">Add funds</button>
+        </form>
+      </section>
+
+      <section data-pane="pay" hidden>
+        <h2>Pay</h2>
+        <form id="pay-form">
+          <label>Card token
+            <input id="pay-token" required class="mono" placeholder="tok_…">
+          </label>
+          <label>Amount <input id="pay-amount" required inputmode="decimal" placeholder="25.00"></label>
+          <label>Currency
+            <select id="pay-currency"><option>GBP</option><option>USD</option><option>EUR</option></select>
+          </label>
+          <label>Payee <input id="pay-payee" required placeholder="Acme Books"></label>
+          <button type="submit">Pay now</button>
+        </form>
+        <p class="hint">One key per click: double-clicking Pay cannot charge twice. The token stands
+        in for the wallet token — use New token per payment, like the API scripts do.</p>
+      </section>
+
+      <section data-pane="cards" hidden>
+        <h2>Cards</h2>
+        <form id="issue-form">
+          <button type="submit">Issue a debit card</button>
+        </form>
+        <p class="hint">The full number is shown once, at issue. Afterwards only the last four exist anywhere.</p>
+        <div id="issue-result"></div>
+        <ul id="cards"></ul>
+      </section>
+
+      <section data-pane="activity" hidden>
+        <h2>Activity</h2>
+        <div id="transactions"></div>
+      </section>
+
+      <section data-pane="disputes" hidden>
+        <h2>Disputes</h2>
+        <form id="dispute-form">
+          <label>Transaction
+            <select id="dispute-txn"></select>
+          </label>
+          <label>Reason
+            <select id="dispute-reason">
+              <option>FRAUD</option><option>NOT_RECEIVED</option><option>DUPLICATE</option>
+              <option>DEFECTIVE</option><option>OTHER</option>
+            </select>
+          </label>
+          <label>What happened <input id="dispute-desc" required placeholder="The books never arrived"></label>
+          <button type="submit">Open dispute</button>
+        </form>
+        <ul id="disputes"></ul>
+      </section>
+
+      <p id="app-error" class="error" hidden></p>
+    </section>
+  </main>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

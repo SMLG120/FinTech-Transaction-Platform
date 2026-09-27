@@ -23,7 +23,7 @@ import java.util.UUID;
  * that disagrees with its journal is not a state this schema can be left in by a crash.
  *
  * <p>Entries are never edited or deleted. A mistake is fixed by posting a {@link
- * JournalEntryKind#REVERSAL} that names the offending entry, which is why {@link #reversalOf} exists:
+ * JournalEntryKind#REVERSAL} that names the offending entry, which is why {@link #reversalOfEntryId()} exists:
  * a correction with no reference to what it corrects is indistinguishable from an ordinary movement
  * once enough time has passed.
  */

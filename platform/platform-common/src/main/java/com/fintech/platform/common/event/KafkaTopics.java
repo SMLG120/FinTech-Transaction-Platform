@@ -41,6 +41,40 @@ public final class KafkaTopics {
     public static final String DISPUTE_CREATED = "dispute-created";
     public static final String DISPUTE_STATUS_CHANGED = "dispute-status-changed";
 
+    // ---------------------------------------------------------------- settlement
+    /**
+     * A settlement cycle's contents will no longer change.
+     *
+     * <p>Published for every transition out of {@code CLOSED}: {@code settlement.cycle.reconciled} when
+     * the declared actual matched, and {@code settlement.cycle.broken} when it did not. It is also
+     * published for {@code settlement.cycle.closed}, which is <em>not</em> final and is therefore named
+     * differently at the event-type level than the topic carries it on. The topic is about "stop
+     * watching this period"; the event types say which stop it is.
+     *
+     * <p>That a closed-but-unreconciled cycle travels here is deliberate, and it is the case that makes
+     * the topic worth having: a reporting consumer needs to know when a period stops *growing* even
+     * though its money is not yet final, or it reports a figure that is about to be contradicted.
+     *
+     * <p>Consumers are financial reporting and alerting, neither of which can poll a settlement
+     * database, so this event is the only thing that tells them a period's money is final — including,
+     * critically, when that news is that the period did not reconcile. An earlier version of this
+     * constant was published for reconcile only, which meant the most important outcome a reporting
+     * consumer can be told about arrived on a topic whose name did not suggest it and via no event at
+     * all when the cycle broke rather than reconciled.
+     */
+    public static final String SETTLEMENT_CYCLE_FINALISED = "settlement-cycle-finalised";
+
+    /**
+     * A reconciliation difference was recorded against a cycle.
+     *
+     * <p>Separate from {@link #SETTLEMENT_CYCLE_FINALISED} because the two answer different questions and
+     * have different urgency. A closed cycle is an accounting fact; a break is an exception somebody has
+     * to look at. Folding them together would mean every reconciling cycle wakes the same alerting path
+     * that a missing payment does, and an alerting path that fires on routine success is one people
+     * learn to ignore.
+     */
+    public static final String SETTLEMENT_BREAK_DETECTED = "settlement-break-detected";
+
     /**
      * Terminal parking lot for events that could not be processed.
      *
@@ -64,6 +98,8 @@ public final class KafkaTopics {
             AUDIT_EVENTS,
             DISPUTE_CREATED,
             DISPUTE_STATUS_CHANGED,
+            SETTLEMENT_CYCLE_FINALISED,
+            SETTLEMENT_BREAK_DETECTED,
             DEAD_LETTER_EVENTS);
 
     /**

@@ -21,6 +21,20 @@ spring:
           min-idle: 2
   cloud:
     gateway:
+      # Browser access for the local web UI. One origin, loopback, enumerated rather than
+      # wildcarded: `allowedOrigins: "*"` would answer every site's preflight, and with
+      # allow-credentials off that still trains reviewers to ignore the block. Production serves
+      # the UI from its own origin and sets GATEWAY_CORS_ALLOWED_ORIGINS to exactly that.
+      globalcors:
+        cors-configurations:
+          '[/api/**]':
+            allowedOrigins: ${GATEWAY_CORS_ALLOWED_ORIGINS:http://localhost:3001}
+            allowedMethods: [GET, POST, OPTIONS]
+            # Authorization and Content-Type make a request preflighted; Idempotency-Key rides
+            # along because payments and top-ups require it, and X-Correlation-Id because the UI
+            # sets it on every call so a support ticket can quote one id.
+            allowedHeaders: [Authorization, Content-Type, Idempotency-Key, X-Correlation-Id]
+            maxAge: 3600
       # Routes are declared per service, explicitly, rather than discovered from the registry.
       # A discovery locator routes whatever happens to be running, which means a service that was
       # deployed by mistake becomes publicly reachable the moment it registers. Naming each
@@ -81,6 +95,50 @@ spring:
           uri: ${FRAUD_SERVICE_URL:http://localhost:8085}
           predicates:
             - Path=/api/v1/fraud/**
+
+        # Phase 7. Staff-only, on exactly the same reasoning as the fraud route above and for a stronger
+        # reason: a settlement statement is how an auditor establishes that money reached a merchant, and
+        # there is no path here from a customer's token to a cycle. Nothing in this block is a merchant
+        # portal either, deliberately — the platform has no merchant identity, and a route that would
+        # grow one the first time a portal was wanted is a route that gets written without the care the
+        # fraud route has.
+        #
+        # No role predicate, for the same reason as fraud: SettlementAuthorization distinguishes a role
+        # that may read a statement from a role that may close a cycle, declare an actual or work a
+        # break, and a path predicate cannot express that. One list of roles, in the service.
+        - id: settlement-service
+          uri: ${SETTLEMENT_SERVICE_URL:http://localhost:8089}
+          predicates:
+            - Path=/api/v1/settlement/**
+
+        # Phase 8. Support-only: the delivery log exists so an agent can answer "was the customer
+        # told", and a retry re-sends a message that failed. No customer route, for the same reason
+        # the fraud route has none — and stronger: this service cannot scope a notification to the
+        # caller even if it wanted to, because it correlates on a digest it cannot map back to a
+        # token. A per-customer rule here would be enforced by nothing.
+        - id: notification-service
+          uri: ${NOTIFICATION_SERVICE_URL:http://localhost:8086}
+          predicates:
+            - Path=/api/v1/notifications/**
+
+        # Phase 9. Supervision-only: the trail records the staff's own actions, so the supervised
+        # roles are kept off it by the AUDIT_PATH rule in GatewaySecurityConfiguration — a trail the
+        # supervised can shape is a press release. No role predicate here for the same reason as
+        # fraud and settlement: one list of roles, in the service.
+        - id: audit-service
+          uri: ${AUDIT_SERVICE_URL:http://localhost:8087}
+          predicates:
+            - Path=/api/audit/**
+
+        # Phase 10. Customers open their own cases, support works the queue. The gateway admits the
+        # customer, support and admin roles and nothing else; ownership — "is this the opener" — is
+        # the service's question, because the gateway has no idea whose case an id names. A
+        # predicate here could not express it, so like fraud and settlement the roles live in the
+        # service and the gateway only keeps everyone else out.
+        - id: dispute-service
+          uri: ${DISPUTE_SERVICE_URL:http://localhost:8088}
+          predicates:
+            - Path=/api/v1/disputes/**
 
 server:
   port: ${SERVER_PORT:8080}

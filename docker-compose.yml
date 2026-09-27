@@ -32,7 +32,7 @@ x-logging: &default-logging
     max-size: "10m"
     max-file: "3"
 
-# Applied to all nine Spring Boot services, so a security-relevant setting cannot drift between them.
+# Applied to all ten Spring Boot services, so a security-relevant setting cannot drift between them.
 x-service: &service
   restart: unless-stopped
   networks: [fintech]
@@ -40,7 +40,7 @@ x-service: &service
   # Long enough for server.shutdown=graceful to drain in-flight requests before SIGKILL.
   stop_grace_period: 30s
 
-# Environment shared by all nine services. Secrets are opt-in per service below, never inherited.
+# Environment shared by all ten services. Secrets are opt-in per service below, never inherited.
 x-service-env: &service-env
   APP_ENVIRONMENT: ${APP_ENVIRONMENT:-local}
   APP_VERSION: ${APP_VERSION:-0.1.0-SNAPSHOT}
@@ -65,7 +65,7 @@ x-service-env: &service-env
   # common cause of a container being OOM-killed while the JVM still believes it has headroom.
   JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=70.0 -XX:MaxMetaspaceSize=256m
 
-# One Dockerfile for all nine services; the module is selected at build time.
+# One Dockerfile for all ten services; the module is selected at build time.
 x-service-build: &service-build
   context: .
   dockerfile: infrastructure/docker/Dockerfile.service
@@ -448,6 +448,20 @@ services:
       # names no service -- the failure looks like a fraud-service outage and is really a missing line
       # here. Every other route above sets its URL for the same reason.
       FRAUD_SERVICE_URL: http://fraud-service:8085
+      # Where /api/v1/settlement/** is forwarded, for the same reason. Without this the route falls back to
+      # its localhost default, which resolves inside the gateway's own container and answers 500 with a
+      # connection-refused naming no service.
+      SETTLEMENT_SERVICE_URL: http://settlement-service:8089
+      # Where /api/v1/notifications/** is forwarded, for the same reason. The delivery log is a
+      # support tool, so without this an agent's read would fail as a gateway 500 rather than as a
+      # notification-service answer.
+      NOTIFICATION_SERVICE_URL: http://notification-service:8086
+      # Where /api/audit/** is forwarded, for the same reason. The trail is a supervision tool, so
+      # without this an auditor's read would fail as a gateway 500 rather than as an audit answer.
+      AUDIT_SERVICE_URL: http://audit-service:8087
+      # Where /api/v1/disputes/** is forwarded, for the same reason. Without this a customer's case
+      # would fail as a gateway 500 rather than as a dispute-service answer about their payment.
+      DISPUTE_SERVICE_URL: http://dispute-service:8088
     ports:
       - "127.0.0.1:8080:8080"
     depends_on:
@@ -686,6 +700,12 @@ services:
       SERVICE_DB_PASSWORD: ${SERVICE_DB_PASSWORD:?run ./scripts/bootstrap.sh to create .env}
       SERVICE_DB_USERNAME: fintech_disputes
       KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+      # Where the open-case check asks transaction-service whether the payment is settled and whose
+      # it is. Same variable the gateway uses to route to transaction-service, because it is the
+      # same fact: this is where transaction-service is. Without it the service would default to
+      # localhost, which inside a container is the container itself, and every case would fail with
+      # a 503 that looks like transaction-service being down.
+      TRANSACTION_SERVICE_URL: http://transaction-service:8084
     ports:
       - "127.0.0.1:9088:8088"
     depends_on:
@@ -695,6 +715,63 @@ services:
         condition: service_healthy
       kafka-init:
         condition: service_completed_successfully
+
+  settlement-service:
+    <<: *service
+    image: fintech/settlement-service:local
+    build:
+      <<: *service-build
+      args:
+        MODULE: services/settlement-service
+        SERVICE_NAME: settlement-service
+    container_name: fintech-settlement-service
+    environment:
+      <<: *service-env
+      SERVER_PORT: "8089"
+      SERVICE_DB_URL: jdbc:postgresql://postgres:5432/fintech_settlement
+      SERVICE_DB_PASSWORD: ${SERVICE_DB_PASSWORD:?run ./scripts/bootstrap.sh to create .env}
+      SERVICE_DB_USERNAME: fintech_settlement
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+    ports:
+      - "127.0.0.1:9089:8089"
+    # No redis dependency, unlike the services around it: this one holds no cached features and no
+    # counters, because a settlement cycle's contents are the rows and the rows are the truth. Depending
+    # on a cache it does not use would mean a redis outage could stop settlement for no reason, and an
+    # operator reading the depends_on would have no way to tell that redis is load-bearing for the other
+    # services and decorative here.
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+
+  # -------------------------------------------------------------------------------------------
+  # Web frontend
+  #
+  # Static customer UI on nginx: no application code runs here, so there is no environment block
+  # and no secret to hand it. The browser talks to the gateway and Keycloak directly; this
+  # container serves files and security headers, nothing else.
+  # -------------------------------------------------------------------------------------------
+
+  web-frontend:
+    image: fintech/web-frontend:local
+    build:
+      context: web
+      dockerfile: Dockerfile
+    container_name: fintech-web-frontend
+    restart: unless-stopped
+    networks: [fintech]
+    ports:
+      # Loopback only, like everything else in this file. The UI's origin is
+      # http://localhost:3001, which is the origin the gateway and Keycloak allow.
+      - "127.0.0.1:${WEB_PORT:-3001}:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1:80/index.html || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    logging: *default-logging
 
 # ===============================================================================================
 # Networks and volumes

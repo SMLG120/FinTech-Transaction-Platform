@@ -51,6 +51,7 @@ SERVICES=(
   fintech_notifications
   fintech_audit
   fintech_disputes
+  fintech_settlement
 )
 
 log() { printf '[db-init] %s\n' "$*"; }

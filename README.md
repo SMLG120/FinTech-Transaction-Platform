@@ -2,11 +2,14 @@
 
 An event-driven payment platform built as a set of independently deployable Spring Boot services.
 
-This repository is being built in sixteen phases. **Phases 1, 2 and 3 are complete**: the module structure,
-nine service skeletons, local infrastructure, observability wiring and build pipeline are in place,
-and customer-service now serves the customer profile and identity-check API with its personal data
-encrypted at rest. What is not built yet is stated in the phase list below rather than left to be
-discovered.
+This repository is being built in sixteen phases. **Phases 1 through 11 are complete**: ten service
+skeletons, local infrastructure, observability wiring and build pipeline are in place, and the
+platform now carries a payment from authorisation through fraud scoring to a period statement that is
+reconciled against a bank figure and cannot be edited once it has been given out — tells the
+customer and the operator about each step, records who did what in a trail nobody can edit, takes
+money back when a chargeback case says so, and shows a customer all of it in a browser. What is not
+built
+yet is stated in the phase list below rather than left to be discovered.
 
 > **No real payment network, no real card numbers, no real money.** Every card number, token and
 > identity in this repository is synthetic test data. Card data is tokenised at the edge and the
@@ -33,6 +36,7 @@ make ps
 | What | Where |
 | --- | --- |
 | Gateway | http://localhost:8080 |
+| Web UI | http://localhost:3001 |
 | Kafka UI | http://localhost:8081 |
 | Keycloak | http://localhost:8180 |
 | Prometheus | http://localhost:9090 |
@@ -204,6 +208,142 @@ The digest comparison is the one that earns its keep. If the two services disagr
 the derivation, nothing errors: the engine raises an alert against a subject nobody recognises and
 velocity silently resets. Only reading both databases shows it.
 
+### A statement that has been given out cannot be edited
+
+Settlement is the one place in the platform where the answer is "we do not know yet" and that is
+correct, because the honest answer to a bank's figure has not arrived. A period is counted from the
+events, closed, given out, and then compared with a figure the platform is told from outside — because
+a system that reconciles its own arithmetic against itself has not checked anything. The live check
+goes after the parts that only exist once money has actually moved through a real topic:
+
+```
+./scripts/verify-settlement-lifecycle.sh
+```
+
+It needs a day-and-currency period of its own, because it closes one: a cycle is unique per
+`(business_date, currency)`, so the default USD period is spent by a run. `SETTLEMENT_CHECK_CURRENCY=EUR`
+runs it in another, and `--reset-period` clears an `OPEN` period left behind by an interrupted run —
+never a closed one, which is the one thing this service will not edit.
+
+It pays, waits for the payment to appear on a statement line, refunds it, and checks in SQL that the
+refund carried as a **negative** line and that the pair nets to zero. Then it closes the period, and
+makes a payment that lands *after* the close — the case the whole design is about. The money moved and
+the period is final, so the platform must neither mutate the statement nor lose the payment: the frozen
+total is unchanged, no line is added, and a `PERIOD_ALREADY_CLOSED` finding is recorded. Finally it
+declares an actual a pound short, checks that a mismatch comes back as a `200` with a negative
+difference rather than a `409`, that the period cannot be confirmed while a finding is open, and that
+the finding carries the acknowledging operator.
+
+Three things in there are worth more than the rest. The late payment is the immutability rule
+observed across Kafka rather than asserted in a unit test. The `200` for a mismatch is the difference
+between "your request was fine and the news is in the reply" and "your request was malformed" — the
+latter sends an operator looking at their own keyboard instead of at the clearing file. And the
+refund netting to zero in SQL is the check that a reversal was stored as a *movement in the opposite
+direction* rather than as a positive amount with a label on it, which is a statement that adds money
+nobody received. Design in [ADR-0009](docs/decisions/0009-settlement-cycles-and-reconciliation.md).
+
+### The platform tells somebody, exactly once
+
+Notification-service consumes the transaction, fraud and settlement topics and turns each fact into
+one message — push for a payment, SMS for a fraud outcome worth acting on, email for a settlement
+period — claimed with an insert so a redelivered event cannot tell the customer twice. An approved
+payment notifies nobody: there is no human action in it, and a message per approval would be noise
+at best and a per-payment SMS bill at worst. The live check goes after the parts that only exist
+once a real topic is between the services:
+
+```
+./scripts/verify-notification-lifecycle.sh
+```
+
+It pays, waits for the message rather than assuming it has already been written, and checks the
+things a service-level test cannot: that the gateway routes `/api/v1/notifications` to a support
+agent and refuses it to a customer and an auditor, that the response names the recorded figure with
+no recipient digest in it, that the database holds one row for the payment with no column a card
+number could be stored in, that retrying the sent message is a `409 NOTIFICATION_ALREADY_SENT`
+rather than a second delivery, and that a failed message retries to `SENT`.
+
+Two things in there are worth more than the rest. The digest absence is the join key that must
+never travel: the row holds the owner digest and the view renders everything except it, because a
+digest in a support response joins across the fraud and notification databases for anyone who can
+read both. And the `409` for a sent retry is the difference between "there is nothing to do" said
+loudly and a duplicate delivery nobody ordered. Design in
+[ADR-0010](docs/decisions/0010-notification-delivery-and-retry.md).
+
+### Who did what is written where nobody can rewrite it
+
+Audit-service consumes `audit-events` and keeps the platform's trail: who did what to which
+resource, with what outcome. It is a separate service because an audit log written by the component
+it audits records what that component chose to record. The table is append-only by database
+trigger, not by convention — an `UPDATE` or `DELETE` issued straight at the database is refused —
+and the API has no write endpoint at all, so a write is an unmapped route rather than a forbidden
+action. The live check goes after the parts that only exist once a real analyst acts through a real
+topic:
+
+```
+./scripts/verify-audit-lifecycle.sh
+```
+
+It raises an alert with a burst of payments, claims it as the realm's analyst, waits for the trail
+rather than assuming it has already been written, and checks the things a service-level test
+cannot: that the gateway routes `/api/audit/records` to an auditor and refuses it to a customer, a
+support agent and a fraud analyst; that the row's actor matches the digest on the alert timeline
+without naming the analyst's raw subject; that a refused second claim leaves no second row; and
+that an `UPDATE` and a `DELETE` against the trail are refused by the database itself.
+
+Two things in there are worth more than the rest. The digest comparison is the join that must
+agree: fraud-service computed the actor and the trail stored what the event carried, and if the two
+disagreed about who acted, nothing would error — the trail would simply name nobody. And the
+refused `UPDATE` is the append-only property observed rather than asserted: a trail a SQL client
+can edit is a second draft of history. Design in
+[ADR-0011](docs/decisions/0011-audit-trail-as-append-only-service.md).
+
+### Taking money back on purpose
+
+Dispute-service owns the chargeback workflow: a customer opens a case on their own settled payment,
+both sides plead in the file, and a support agent decides — refund or reject, with a reason either
+way. A refund is announced on `dispute-status-changed` and transaction-service reverses the capture
+out of its own stored owner digest, which never leaves that service: dispute-service holds no key
+and mints no identity, so it cannot move money itself without becoming the confused deputy the
+forwarded identity exists to prevent. The live check goes after the parts that only exist once a
+real case moves real money through real topics:
+
+```
+./scripts/verify-dispute-lifecycle.sh
+```
+
+It pays, settles, opens a case as the customer, and checks the things a service-level test cannot:
+that a second case on the same payment is refused, that a case on an unsettled hold and on another
+customer's payment are refused with different codes, that neither side's pleading nor the customer's
+own resolve button moves the case past its parties, and that the agent's refund actually reverses
+the capture — read back as `REVERSED` with the balance to prove it. Then that a second decision
+and late evidence are refused, and that open, evidence and resolution all reached the audit trail.
+
+Two things in there are worth more than the rest. The balance is the refund observed rather than
+decided: a 200 on resolve with no postings is a decision without a refund, and only reading the
+ledger shows it. And the ownership refusals are the forwarded identity working across a service
+boundary — transaction-service applying its own rule to a real caller's request, with this service
+translating the answer into its own vocabulary. Design in
+[ADR-0012](docs/decisions/0012-disputes-decided-by-support-refunded-by-ledger.md).
+
+### The browser a customer can use
+
+`http://localhost:3001` serves a static customer UI — no framework, no build step, no backend of
+its own. Sign in with a local login, register a profile with a synthetic identity check, fund,
+pay, issue and freeze cards, and open disputes: every button calls the gateway the verify scripts
+call, with a fresh idempotency key per click and the correlation id on every refusal. The token
+lives in memory and dies with the tab; staff views do not exist here by design. The live check
+goes after the parts that only exist in a browser:
+
+```
+./scripts/verify-frontend-lifecycle.sh
+```
+
+It proves the three-way origin agreement (nginx serves it, the gateway allows it, Keycloak lists
+it), that the preflight answers the UI's origin with the payment headers, that the UI's exact
+calls move money, and that the served files carry no secrets. The password grant it uses is fenced
+to local development — production moves to Authorization Code with PKCE in a single `login`
+method. Design in [ADR-0013](docs/decisions/0013-static-customer-ui.md).
+
 ### How a request is authenticated
 
 ```
@@ -271,6 +411,11 @@ scripts/
   verify-card-lifecycle.sh   Asserts the card lifecycle end to end against a running stack
   verify-payment-lifecycle.sh  Asserts funding, a payment, and replay, end to end
   verify-fraud-lifecycle.sh    Asserts scoring, the digest join, and the analyst queue, end to end
+  verify-settlement-lifecycle.sh  Asserts the period statement, its immutability, and a worked finding, end to end
+  verify-notification-lifecycle.sh  Asserts the message, the delivery log's access rules, and the retry, end to end
+  verify-audit-lifecycle.sh  Asserts the trail row, its access rules, and its immutability, end to end
+  verify-dispute-lifecycle.sh  Asserts the case, the refund through the ledger, and the trail, end to end
+  verify-frontend-lifecycle.sh  Asserts the served UI, the preflight, and the UI's calls, end to end
   wait-for-http.sh           Polls an endpoint until it answers
 ```
 
@@ -389,11 +534,11 @@ Things that are deliberately *not* what production looks like, so nobody mistake
 | 4 | Card issuing, tokenisation, PAN never stored | **done** |
 | 5 | Transaction domain, double-entry ledger, idempotency | **done** |
 | 6 | Fraud engine, rules and scoring | **done** |
-| 7 | Settlement, reconciliation, reversals | |
-| 8 | Notifications | |
-| 9 | Audit trail and regulatory reporting | |
-| 10 | Disputes and chargebacks | |
-| 11 | Web frontend | |
+| 7 | Settlement, reconciliation, reversals | **done** |
+| 8 | Notifications | **done** |
+| 9 | Audit trail and regulatory reporting | **done** |
+| 10 | Disputes and chargebacks | **done** |
+| 11 | Web frontend | **done** |
 | 12 | Contract and integration testing | |
 | 13 | Resilience: circuit breakers, retries, chaos | |
 | 14 | Performance and load testing | |
@@ -413,5 +558,17 @@ Things that are deliberately *not* what production looks like, so nobody mistake
 - [docs/decisions/0007-double-entry-ledger-and-idempotency.md](docs/decisions/0007-double-entry-ledger-and-idempotency.md)
 - [docs/decisions/0008-asynchronous-advisory-fraud-scoring.md](docs/decisions/0008-asynchronous-advisory-fraud-scoring.md)
   — why fraud scores after the payment rather than before it, and what that costs
+- [docs/decisions/0010-notification-delivery-and-retry.md](docs/decisions/0010-notification-delivery-and-retry.md)
+  — why a consumed fact becomes exactly one message, why a failed send never fails the event, and
+  why there is no customer route to the delivery log
+- [docs/decisions/0011-audit-trail-as-append-only-service.md](docs/decisions/0011-audit-trail-as-append-only-service.md)
+  — why the trail is a separate service, why append-only is a database trigger rather than a
+  convention, and why the trail holds digests instead of subjects
+- [docs/decisions/0012-disputes-decided-by-support-refunded-by-ledger.md](docs/decisions/0012-disputes-decided-by-support-refunded-by-ledger.md)
+  — why the refund is announced rather than called, why only the customer opens, and why the audit
+  actor is a keyless hash instead of a shared digest
+- [docs/decisions/0013-static-customer-ui.md](docs/decisions/0013-static-customer-ui.md)
+  — why the UI is static files with no backend, why the password grant is fenced to local
+  development, and why the token lives in memory
 - [docs/deployment.md](docs/deployment.md) — local versus production
 - [docs/decisions/](docs/decisions/) — architecture decision records

@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.fintech.platform.common.event.KafkaTopics;
 import com.fintech.platform.fraud.FraudFixtures;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -105,9 +106,16 @@ class FraudDeadLetterPropertiesTest {
         void theDefaults() {
             assertThatCode(() -> FraudFixtures.properties().getDeadLetter().validate())
                     .doesNotThrowAnyException();
-            assertThat(FraudFixtures.properties().getDeadLetter().getTopic())
-                    .as("the default must be the topic the platform's catalogue provisions")
-                    .isEqualTo("dead-letter-events");
+        }
+
+        @Test
+        @DisplayName("the default topic is the one the platform's catalogue provisions")
+        void theDefaultTopicIsTheProvisionedTopic() {
+            // Against the constant rather than a literal. A literal here would keep passing after
+            // somebody renames the topic in KafkaTopics and leaves this service parking events
+            // somewhere TopicCatalogueTest never created, which fails at the first poison event rather
+            // than at startup. The bean under test is the one the recoverer is configured from.
+            assertThat(FraudFixtures.properties().getDeadLetter().getTopic()).isEqualTo(KafkaTopics.DEAD_LETTER_EVENTS);
         }
     }
 

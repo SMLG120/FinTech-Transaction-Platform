@@ -6,8 +6,8 @@ below are deliberate rather than oversights to be tidied away later.
 
 ## What the local stack is
 
-- Sixteen long-running containers: nine application services, PostgreSQL, Redis, Kafka, Keycloak,
-  Prometheus and Grafana, plus a one-shot `kafka-init` that creates topics.
+- Seventeen long-running containers: ten application services, PostgreSQL, Redis, Kafka, Kafka UI,
+  Keycloak, Prometheus and Grafana, plus a one-shot `kafka-init` that creates topics.
 - Every published port binds to `127.0.0.1`. Nothing is reachable from the network.
 - Secrets are generated into a local `.env` by `scripts/bootstrap.sh`.
 - Images are built locally and tagged `:local`.
@@ -31,12 +31,12 @@ make clean-all # stop and delete data volumes
 | Migrations | Flyway runs inside the application on startup | Applied by a separate job, before rollout; `FLYWAY_ENABLED=false` on the service |
 | Service discovery | Compose DNS | Cluster DNS |
 | Traffic between services | Cleartext, with the identity HMAC-signed and shared-key verified | mTLS and authenticated callers |
-| Identity | One `INTERNAL_IDENTITY_SIGNING_KEY` in `.env`, held by the gateway and all eight services | Per-service certificate, so a compromised service cannot forge identity for the others |
+| Identity | One `INTERNAL_IDENTITY_SIGNING_KEY` in `.env`, held by the gateway and all nine services | Per-service certificate, so a compromised service cannot forge identity for the others |
 | Scaling | Fixed replica count of one | Scaled per service, driven by load and by which events each consumer actually needs |
 | Secrets rotation | Delete `.env`, re-run `make setup`, restart | Rotated without a rebuild; long-lived and revocable |
 
 Two rows deserve emphasis. The shared local `SERVICE_DB_PASSWORD` exists so that a developer does not
-have to manage eight credentials to read a log line, and it has no production counterpart — a
+have to manage nine credentials to read a log line, and it has no production counterpart — a
 deployed service gets its own. And Flyway running in-process is convenient locally and wrong in
 production, because a rolling deployment would otherwise run migrations concurrently from several
 replicas; `spring.flyway.enabled` is set to `false` for deployed services and migrations become a
@@ -54,14 +54,14 @@ convenient shared variable to a service that has no business holding it.
 
 ### One exception, and it is deliberate
 
-`INTERNAL_IDENTITY_SIGNING_KEY` is the single value the gateway and all eight services share. It is
+`INTERNAL_IDENTITY_SIGNING_KEY` is the single value the gateway and all nine services share. It is
 the one shared secret in the platform, and it is shared because the alternative is worse: a service
 that cannot verify the gateway's identity either trusts the headers unverified or refuses every
 request. The property resolves to empty by default, and an empty key means the verification filter is
 not registered at all, so a service with no key protects every endpoint rather than trusting them.
 
 Its two weaknesses are both real and neither is mitigated here. Any one service that is compromised
-can forge an identity for any user, and rotating the key is a coordinated restart of nine services
+can forge an identity for any user, and rotating the key is a coordinated restart of ten services
 rather than a gateway-only change. Phase 15 replaces it with a per-service certificate; until then
 this is a known, documented gap, not an oversight.
 
@@ -152,7 +152,7 @@ Keycloak runs in the Compose stack with a realm imported from
 `127.0.0.1`. A token whose issuer disagrees with the gateway's configured issuer is rejected, and
 that is the first thing to check when the gateway and Keycloak are on different hosts.
 
-The realm is a development artefact. It contains six users with published passwords, and it exists so
+The realm is a development artefact. It contains seven users with published passwords, and it exists so
 that the authorisation matrix can be exercised end to end without provisioning anything by hand. It
 has no production counterpart: production expects an external IdP, and the gateway is configured by
 issuer, audience and JWKS URI rather than by anything Keycloak-specific.
@@ -164,6 +164,13 @@ surface and cannot act on it. `./scripts/get-token.sh analyst` prints a token fo
 **adding a user or role to the realm file only affects a fresh import** — `bootstrap.sh` skips a realm
 that already exists, so an existing local realm needs the role added through the admin console or the
 admin API. `verify-fraud-lifecycle.sh` fails with that instruction rather than a confusing 403.
+
+Phase 7 added `SETTLEMENT_OPERATOR` and `settlement@fintech.test` on the same pattern, and the same
+caveat is the first thing to check when `verify-settlement-lifecycle.sh` cannot get a token for it. The
+gateway authorises the settlement surface on two rules rather than one: `GET` is open to
+`SETTLEMENT_OPERATOR`, `COMPLIANCE_OFFICER`, `AUDITOR` and `PLATFORM_ADMIN`, and every other method is
+open to `SETTLEMENT_OPERATOR` and `PLATFORM_ADMIN` alone. Reading a statement is how an auditor does the
+job; closing a period or declaring an actual moves money, and the reader roles are kept off both.
 
 ## Fraud operations
 
@@ -202,6 +209,63 @@ takes pruning with it.
 wrong — an explicit default-scope list including `roles`, and `fullScopeAllowed` — either of which
 produces tokens that verify correctly and carry no roles at all.
 
+## Settlement operations
+
+settlement-service is the only service whose output is given to somebody outside the platform, and
+that changes what an incident here is. A fraud decision that is wrong blocks a payment, which is
+noisy and self-correcting. A **statement** that is wrong is read, acted on, and only later disputed —
+so the operational question is not "is it up" but "is what it already published still true", and the
+answer is a property of the data rather than of the process.
+
+Three things are worth having in front of you before that happens.
+
+**A period is not a batch you can rerun.** `POST /cycles/{ref}/close` is refused on a period that
+is already closed, and the refusal is the contract rather than an inconvenience: a merchant that was
+sent a statement cannot be un-sent it. There is no "re-close" and no "edit" endpoint, and if an
+operator genuinely needs to change a period the answer is a finding and a reversal, because that is
+the same answer the platform gives when a payment turns up after a close on its own.
+
+**One period per day per currency, and the currency is not cosmetic.** A cycle is unique on
+`(business_date, currency_code)` in the database, not by convention, so a second period for the same day
+in the same currency cannot exist even if two operators try. This is what makes the local check
+single-use: `verify-settlement-lifecycle.sh` closes the period and leaves it `BROKEN`, so that day's
+period is spent. Two ways to run it again, and neither touches a given-out statement:
+
+```
+SETTLEMENT_CHECK_CURRENCY=EUR ./scripts/verify-settlement-lifecycle.sh   # a period nobody has used
+./scripts/verify-settlement-lifecycle.sh --reset-period                  # drop an OPEN period first
+```
+
+`--reset-period` is deliberately narrow. It deletes the current day's period and its lines, and only
+when that period is still `OPEN` — an open period has not been given out, so its lines are provisional
+entries that a later capture would change anyway. It refuses to delete a closed one, because the whole
+value of this service is that a statement nobody can edit is the evidence, and a dev convenience that
+erases one is a contradiction rather than a convenience. It exists because the alternative is a check
+that cannot be re-run on any machine where it has ever failed, and people stop running checks like
+that. GBP is not offered as a fallback: the payment and fraud checks pay in it.
+
+**An open finding is the thing that is actually wrong.** The states `OPEN` and `RESOLVED` are
+distinguished because a discrepancy that is *known* and one that has been *written off* are different
+facts about the money, and a dashboard that showed only "period BROKEN" would flatten them into the
+same sentence. Acknowledging a finding is the auditable step; it records who looked and when, and it
+does not close the finding.
+
+| Symptom | Likely cause | What to do |
+| --- | --- | --- |
+| A period is `OPEN` long after its date | The consumer is not processing, or the relay is not publishing | Check the outbox backlog first: payments that exist but are absent from the statement lines are a relay problem, not a period problem |
+| A period is `BROKEN` and nobody declared an actual | A late or duplicate movement, or a real mismatch | Read the findings; `PERIOD_ALREADY_CLOSED` means a payment settled after a close, which is expected at a batch boundary and does not need a code change |
+| The outbox is backing up | Kafka unreachable | Same trade-off as fraud-service: turning the relay off also stops pruning, and a stopped relay means lines exist that no statement has counted yet |
+| A movement is in `dead-letter-events` and the line is missing | The payload failed validation | The period is still correct; the money is not counted, so the finding is that the line is absent, not that the total is wrong |
+
+The last row is the one that ends in a real incident, and the dead-letter topic is where it starts.
+A movement that cannot be parsed is never silently dropped: it is republished with the reason
+attached, and a line that does not exist is a gap somebody has to see. In a system whose output is a
+statement, a silent drop is the only failure that is invisible until someone relies on it.
+
+settlement-service is deliberately the one service with no `REDIS_HOST`. Its contents are rows and the
+rows are the truth, so a cache would be a second source of answers that can disagree with the first,
+and a redis outage would be able to stop a service that never needed it.
+
 ## Health checks and rollout
 
 Each service image runs as a non-root user and ships a `curl`-based healthcheck against its own
@@ -215,7 +279,7 @@ same endpoint.
 
 ## Observability
 
-Prometheus scrapes all nine services plus itself; Grafana provisions a datasource and a dashboard
+Prometheus scrapes all ten services plus itself; Grafana provisions a datasource and a dashboard
 from files in `infrastructure/grafana/`. Alert rules live in
 `infrastructure/prometheus/alerts/platform-alerts.yml` and are validated with `promtool`:
 

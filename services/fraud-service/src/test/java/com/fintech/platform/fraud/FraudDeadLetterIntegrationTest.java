@@ -2,8 +2,6 @@ package com.fintech.platform.fraud;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.HashMap;
@@ -90,18 +88,22 @@ class FraudDeadLetterIntegrationTest {
         // here the container has to be live, because the error handler belongs to the container and not
         // to the handler method.
         registry.add("spring.kafka.listener.auto-startup", () -> "true");
-        // The shipped default is three attempts and a one-second back-off doubling to ten, which is right
-        // for production and about ten seconds too slow for a test that runs on every commit. Two
-        // attempts is still more than one, which is the distinction that matters: the assertion below
-        // fails if the retry is skipped entirely, and passes if the record is retried and then parked.
         registry.add("app.fraud.consumer-group", () -> "fraud-dlt-test-" + UUID.randomUUID());
-        registry.add("spring.kafka.listener.max-attempts", () -> "2");
-        registry.add("spring.kafka.listener.back-off.initial-interval", () -> "100ms");
-        registry.add("spring.kafka.listener.back-off.max-interval", () -> "200ms");
+        // These three are the real property names, under app.fraud.dead-letter where
+        // KafkaErrorHandlingConfiguration reads them. The first version of this test overrode
+        // spring.kafka.listener.max-attempts and spring.kafka.listener.back-off.*, which are not
+        // properties Spring Boot's KafkaProperties.Listener has: they bind to nothing, are not
+        // rejected, and left the test running the shipped three attempts and a one-second doubling
+        // back-off. It still passed, and for the wrong reason -- it was slower than intended and
+        // asserting a policy it was not actually running.
+        //
+        // Two attempts is still more than one, which is the distinction that matters: the assertion
+        // below fails if the retry is skipped entirely, and passes if the record is retried and then
+        // parked.
+        registry.add("app.fraud.dead-letter.max-attempts", () -> "2");
+        registry.add("app.fraud.dead-letter.initial-interval-ms", () -> "100");
+        registry.add("app.fraud.dead-letter.max-interval-ms", () -> "200");
     }
-
-    @Autowired
-    private ObjectMapper json;
 
     @Autowired
     private JdbcTemplate jdbc;
@@ -135,17 +137,90 @@ class FraudDeadLetterIntegrationTest {
         // The point of parking rather than blocking: the partition is free for the next event. A record
         // that merely failed, without the DLT, would have left the container retrying it in place and
         // this healthy payment would never be seen.
-        ObjectNode good = json.createObjectNode();
-        good.put("eventId", UUID.randomUUID().toString());
-        good.put("eventType", "PaymentAuthorized");
-        good.put("eventVersion", 1);
-        good.put("occurredAt", java.time.Instant.now().toString());
-        good.set("payload", json.createObjectNode());
-        produce(json.writeValueAsString(good));
+        //
+        // The first version of this assertion published an event type the consumer does not handle and
+        // then asserted that no decision had been written, which is what a *dropped* event looks like
+        // too. Both a parked poison record and an unscored event produce zero rows, so the assertion
+        // passed whether the partition was free or permanently wedged -- the one thing the class
+        // exists to disprove. So the next event is a real transaction.created payload, and the wait is
+        // for its decision to appear. Nothing is asserted about timing: a wedged partition fails by
+        // timing out here, which is a failure, whereas "the row is absent" was a pass.
+        UUID healthy = UUID.randomUUID();
+        produce(scoringEnvelope(healthy));
 
+        // Wait first, then count. The container is asynchronous, so a count taken immediately after the
+        // produce is a race that reads 0 whether the partition is free or wedged -- which is the same
+        // blind spot the original assertion had, in a different position. Awaiting the row first means
+        // both assertions below are about a state that has already happened.
+        assertThat(scoredTransactionId())
+                .as("the decision that appears must belong to the payment after the poison record, which is "
+                        + "the only way this proves the partition was drained rather than the record being "
+                        + "parked alongside a healthy event nobody read")
+                .isEqualTo(healthy);
         assertThat(decisionCount())
-                .as("a parked record must not have been scored")
-                .isEqualTo(0L);
+                .as("exactly one decision: the parked record must not have been scored, and the healthy one "
+                        + "must have been scored once rather than twice across the retry")
+                .isEqualTo(1L);
+    }
+
+    /**
+     * A well-formed {@code transaction.created} event that the scoring path accepts end to end.
+     *
+     * <p>Hand-built JSON rather than an {@code EventEnvelope}, because the point is that the broker
+     * delivers a record the container deserialises on its own terms. The digests are the same
+     * 64-character shapes the platform sends; scoring does not verify them, it only stores them.
+     *
+     * @param transactionId the payment the decision, if it arrives, will be keyed by
+     * @return the envelope as text
+     */
+    private String scoringEnvelope(UUID transactionId) {
+        return """
+                {"eventId":"%s","eventType":"transaction.created","eventVersion":1,
+                 "occurredAt":"%s","correlationId":"dlt-test","aggregateType":"Transaction",
+                 "aggregateId":"%s","metadata":{},
+                 "payload":{"transactionId":"%s","ownerSubjectDigest":"%s","amount":"10.00",
+                 "currency":"GBP","payeeName":"Healthy Payment","payeeReference":"ref","occurredAt":"%s",
+                 "cardReference":"%s","channel":"WEB","deviceReference":"%s","networkReference":"%s"}}
+                """.formatted(
+                        UUID.randomUUID(),
+                        FraudFixtures.NOW,
+                        transactionId,
+                        transactionId,
+                        FraudFixtures.OWNER_DIGEST,
+                        FraudFixtures.NOW,
+                        FraudFixtures.CARD_DIGEST,
+                        FraudFixtures.DEVICE_DIGEST,
+                        FraudFixtures.NETWORK_DIGEST);
+    }
+
+    /**
+     * Waits for the scoring path to write its row.
+     *
+     * <p>Polls rather than sleeping for a fixed interval. The consumer is asynchronous and the delay
+     * between the produce and the row is broker and scheduling dependent, so a fixed sleep is either
+     * too short on a loaded machine -- a flake that would be blamed on the broker -- or longer than
+     * the work needs on every commit.
+     *
+     * @return the transaction the decision was written for
+     */
+    private UUID scoredTransactionId() {
+        long deadline = System.currentTimeMillis() + Duration.ofSeconds(60).toMillis();
+        while (System.currentTimeMillis() < deadline) {
+            List<UUID> scored = jdbc.query(
+                    "select transaction_id from risk_decisions",
+                    (rs, row) -> rs.getObject("transaction_id", UUID.class));
+            if (!scored.isEmpty()) {
+                return scored.get(0);
+            }
+            try {
+                Thread.sleep(200);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        throw new AssertionError("the payment published after the poison record was never scored, so the "
+                + "record was not parked -- the partition is still wedged on it");
     }
 
     /**

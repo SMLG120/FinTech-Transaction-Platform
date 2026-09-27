@@ -1,0 +1,6 @@
+{
+  "gatewayBaseUrl": "http://localhost:8080",
+  "keycloakBaseUrl": "http://localhost:8180",
+  "keycloakRealm": "fintech",
+  "keycloakClientId": "fintech-web"
+}

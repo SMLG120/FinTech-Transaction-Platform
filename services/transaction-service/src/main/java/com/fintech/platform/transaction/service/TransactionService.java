@@ -12,6 +12,7 @@ import com.fintech.platform.transaction.domain.Transaction;
 import com.fintech.platform.transaction.domain.TransactionStatus;
 import com.fintech.platform.transaction.error.TransactionErrorCodes;
 import com.fintech.platform.transaction.persistence.JournalEntryRepository;
+import com.fintech.platform.transaction.persistence.ProcessedEventRepository;
 import com.fintech.platform.transaction.persistence.TransactionRepository;
 import java.time.Clock;
 import java.time.Instant;
@@ -65,6 +66,7 @@ public class TransactionService {
     private final LedgerService ledger;
     private final OutboxWriter outbox;
     private final PaymentProperties properties;
+    private final ProcessedEventRepository processed;
     private final Clock clock;
 
     public TransactionService(
@@ -73,12 +75,14 @@ public class TransactionService {
             LedgerService ledger,
             OutboxWriter outbox,
             PaymentProperties properties,
+            ProcessedEventRepository processed,
             Clock clock) {
         this.transactions = transactions;
         this.entries = entries;
         this.ledger = ledger;
         this.outbox = outbox;
         this.properties = properties;
+        this.processed = processed;
         this.clock = clock;
     }
 
@@ -228,6 +232,61 @@ public class TransactionService {
                 event.body(),
                 now);
         return transaction;
+    }
+
+    /**
+     * Refunds a payment on behalf of a resolved dispute.
+     *
+     * <p>Called by the dispute-resolution consumer, not by any HTTP endpoint — and that is why it
+     * takes no owner digest. The dispute case is the authorization: dispute-service verified the
+     * payment was settled and the customer owned it before the case existed, and a support agent
+     * decided the refund. Requiring the agent's digest here would refuse every legitimate refund,
+     * because the agent never owned the money; requiring the customer's would mean this service
+     * minting an identity it was never given. The payment's own stored digest is the only input the
+     * ledger needs, and it never leaves this service.
+     *
+     * <p><b>The claim and the reversal are one transaction.</b> A redelivered resolution collides on
+     * the claim instead of refunding twice — and a refund issued twice for one dispute is not a
+     * duplicate message, it is extra money.
+     *
+     * @return what the call did: refunded, already refunded, or an already-claimed redelivery.
+     *     The last two both mean no money moved and the outcome is already correct; they differ only
+     *     in where the convergence happened, which is what the metrics distinguish.
+     * @throws com.fintech.platform.common.error.ApiException 404 when the payment does not exist,
+     *     409 when it is in a state no dispute could have produced
+     */
+    @Transactional
+    public RefundOutcome refundForDisputeResolution(UUID eventId, String topic, UUID transactionId) {
+        if (processed.claim(eventId, topic, clock.instant()) == 0) {
+            return RefundOutcome.DUPLICATE;
+        }
+        Transaction transaction = transactions
+                .findById(transactionId)
+                .orElseThrow(() -> TransactionErrorCodes.TRANSACTION_NOT_FOUND.exception(
+                        "No transaction " + transactionId + " exists for that dispute resolution"));
+        if (transaction.status() == TransactionStatus.REVERSED) {
+            // Already refunded — by a redelivery that arrived before its claim committed, or by the
+            // customer reversing directly while the case was open. Either way the money is back
+            // where it belongs and there is nothing to do.
+            return RefundOutcome.ALREADY_REFUNDED;
+        }
+        if (transaction.status() != TransactionStatus.SETTLED) {
+            // A dispute is opened only on a settled payment, so anything else here is a corrupted
+            // or foreign event. Refusing loudly rather than releasing a hold: reverse() on an
+            // authorised payment releases money nobody captured, which is a different act with a
+            // different name, and doing it on a dispute's say-so would be.
+            throw TransactionErrorCodes.TRANSACTION_INVALID_TRANSITION.exception("Transaction " + transactionId + " is "
+                    + transaction.status() + "; a dispute refund applies only to a settled payment");
+        }
+        reverse(transactionId, transaction.ownerSubjectDigest());
+        return RefundOutcome.REFUNDED;
+    }
+
+    /** What a dispute resolution did: moved money, converged, or repeated. */
+    public enum RefundOutcome {
+        REFUNDED,
+        ALREADY_REFUNDED,
+        DUPLICATE
     }
 
     /**

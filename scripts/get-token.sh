@@ -31,14 +31,14 @@ KEYCLOAK_PORT="${KEYCLOAK_PORT:-8180}"
 ISSUER="http://localhost:${KEYCLOAK_PORT}/realms/${KEYCLOAK_REALM}"
 
 case "${IDENTITY}" in
-  admin | customer | agent | auditor | compliance | analyst) ;;
+  admin | customer | agent | auditor | compliance | analyst | settlement) ;;
   -h | --help)
     sed -n '3,10p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
     exit 0
     ;;
   *)
     echo "unknown identity: ${IDENTITY}" >&2
-    echo "expected one of: admin customer agent auditor compliance analyst" >&2
+    echo "expected one of: admin customer agent auditor compliance analyst settlement" >&2
     exit 2
     ;;
 esac

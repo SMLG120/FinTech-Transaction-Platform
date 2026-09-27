@@ -42,9 +42,9 @@ that also reads transaction rows has not separated anything, it has only added a
 first time two services need the same join, the boundary is renegotiated under deadline pressure
 and the data ownership goes with it.
 
-### Why nine services and not fewer
+### Why ten services and not fewer
 
-The count is a consequence of the boundaries, not a target. Each of the nine exists because its
+The count is a consequence of the boundaries, not a target. Each of the ten exists because its
 data has a different owner, a different change cadence, or a different scaling profile:
 
 | Service | Owns | Scales with | Changes because |
@@ -53,11 +53,21 @@ data has a different owner, a different change cadence, or a different scaling p
 | auth-service | credentials, sessions | login traffic | Keycloak and token policy |
 | customer-service | profiles, KYC state | customer traffic | onboarding and compliance rules |
 | card-service | cards, tokens | card operations | issuer and network rules |
-| transaction-service | transactions, ledger | payment volume | ledger and settlement logic |
+| transaction-service | transactions, ledger | payment volume | ledger and payment rules |
+| settlement-service | periods, statement lines, findings | volume of money given out | bank cycle boundaries and reconciliation policy |
 | fraud-service | rules, decisions, alert queue | scoring throughput | rule and threshold policy |
 | notification-service | templates, delivery state | outbound message volume | channel providers |
 | audit-service | the audit trail | event volume | regulatory obligation |
 | dispute-service | disputes, evidence | dispute volume | chargeback rules |
+
+The row worth pausing on is `settlement-service`, because it is the one whose data could have been
+added to `transaction-service` with a single table and would have looked like the cheaper choice. It
+is a separate service for one reason: **a statement that has been given to a merchant cannot be
+edited, and that makes it a different kind of data from a transaction.** A transaction is a record
+of an event and is correct the moment it is written. A statement is an account of a period, and
+the only thing that makes it useful is that everybody was given the same one — which is a property
+a ledger that is still accepting writes cannot offer. See
+[ADR-0009](decisions/0009-settlement-cycles-and-reconciliation.md).
 
 A note on `audit-service`: in many designs the audit trail is a table in each service. Here it is a
 separate service that consumes events, because a regulatory audit trail must be complete even when
@@ -66,7 +76,7 @@ component chose to record.
 
 ### Why the gateway is the only place JWTs are verified
 
-Verifying a token in every service would mean nine places to get issuer, audience and clock skew
+Verifying a token in every service would mean ten places to get issuer, audience and clock skew
 right, and one of them would be wrong. The gateway verifies once and passes the result downstream.
 Downstream services still need to know *who* the caller is, so the gateway forwards validated
 identity in signed internal headers, and from Phase 15 those headers are only accepted on a
@@ -137,6 +147,27 @@ The catalogue exists twice on purpose: as constants in `KafkaTopics.ALL` and as
 one and absent from the other is neither a compile error nor a startup error — it is discovered
 when the first event is published somewhere nobody is listening.
 
+### Settlement learns about money through events, not through the ledger
+
+settlement-service consumes `transaction-settled` and `transaction-reversed` and never reads
+transaction-service's tables. That is not a stylistic preference, it is what makes a settlement bug
+unable to become a payments outage: the worst a wrong statement can do is be wrong, and the worst a
+join into somebody else's ledger can do is take a payment path down with it.
+
+It also means the two services can disagree, and the design assumes they will. A statement is
+reconciled against an **actual declared from outside the platform** — a bank or scheme clearing
+figure — rather than against the ledger that produced it, because a system that reconciles its own
+arithmetic against itself has not checked anything. The gap between the two is the product: a
+mismatch is a first-class, acknowledged and resolved record rather than an error, because the money
+has already moved and the only remaining job is to account for it honestly.
+
+**A period is immutable once closed**, and the reason is not conservatism. A statement is given to a
+merchant; a statement that later changes is a statement that was wrong when it was read, and nobody
+can tell which. So a movement arriving for a period that has already been given out does not mutate
+it and does not get thrown away either: it becomes a finding naming the period it settled in. A
+payment that settles in the same instant its period closes will miss that period — a batch boundary
+is a real boundary — and what is not acceptable is missing it *quietly*.
+
 ### Why fraud is not on the payment's critical path
 
 Every other service in the diagram is an event consumer, and fraud could have been the same. It is
@@ -175,6 +206,44 @@ the service, so its database is not a place that a breach turns into a card-fing
 The cost is accepted and named: a shared key is what makes a digest joinable across two databases
 that share no rows, and joinability is the engine's entire function. See
 [security.md](security.md) for the key's blast radius and the phase that breaks the join.
+
+### Notification turns consumed facts into messages, exactly once each
+
+notification-service consumes the transaction, fraud and settlement topics and keeps its own
+delivery log — one row per fact worth telling somebody about, claimed with an insert so a
+redelivered event cannot tell the customer twice. A send failure never fails the event: the event
+was fine and the channel was not, so the row stays `FAILED` with a next attempt and the scheduler
+re-sends only the send. The sender is simulated; the interface is the seam a real provider plugs
+into. There is no customer route to the log, because this service correlates on a digest it cannot
+map back to a token — the absence of the route is the control. See
+[ADR-0010](decisions/0010-notification-delivery-and-retry.md).
+
+### The audit trail is a separate service that cannot rewrite history
+
+audit-service consumes `audit-events` and keeps one row per auditable fact — who did what to which
+resource, with what outcome. It is separate because an audit log written by the component it audits
+records what that component chose to record. The table is append-only by database trigger rather
+than by convention, the API has no write endpoint, and the rows hold digests rather than subjects:
+a trail that cannot hold an identifier cannot leak one. Reporting is filtered reads over a stable
+shape — by action, by resource, by payment, by request. See
+[ADR-0011](decisions/0011-audit-trail-as-append-only-service.md).
+
+### Disputes are decided by support and refunded by the ledger
+
+dispute-service owns the chargeback case — open, plead, decide — and announces the decision on
+`dispute-status-changed`. Transaction-service consumes resolutions and reverses out of its own
+stored owner digest, which never leaves that service: the direction of the dependency is what keeps
+a compromised dispute-service from becoming a reversal oracle. Only the customer opens, only on
+their own settled payment verified synchronously under their forwarded identity; only staff
+decide. See [ADR-0012](decisions/0012-disputes-decided-by-support-refunded-by-ledger.md).
+
+### The browser is a static client with no backend of its own
+
+The customer UI is files on nginx, not a service: no sessions, no templates, no validations of its
+own. The browser talks to the gateway and Keycloak directly, the token lives in memory, and every
+money-moving click carries a fresh idempotency key. Customer journeys only — staff views would be
+a second authorization model to keep in step with the first. See
+[ADR-0013](decisions/0013-static-customer-ui.md).
 
 ## Consistency
 

@@ -25,7 +25,7 @@ import java.util.Set;
  * foreign-exchange rate source in this platform, and a posting that spans two currencies would need
  * one to balance.
  *
- * <p>Immutable, and {@link #withReversalOf} produces the mirrored posting a reversal needs rather than
+ * <p>Immutable, and {@link #asReversalOf} produces the mirrored posting a reversal needs rather than
  * leaving reversal arithmetic to a call site.
  */
 public final class Posting {

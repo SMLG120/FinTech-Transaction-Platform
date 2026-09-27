@@ -161,6 +161,16 @@ request does not require logging the request body.
 values come from configuration; the tag set is fixed, and no request data, identifier, or principal
 is ever promoted into a metric label.
 
+### The browser gets an enumerated origin and an in-memory token
+
+The customer UI is static files with no backend, so its controls are browser-shaped: the gateway
+answers preflights for exactly one enumerated loopback origin (never a wildcard), the token lives
+in memory and dies with the tab (never localStorage, where it would survive for the first XSS
+hole), framing is refused outright, and the served files carry no secret — asserted by grep in the
+frontend verify script rather than by convention. The password grant the UI uses is fenced to local
+development; production moves to Authorization Code with PKCE and disables direct grants on the
+realm. See [ADR-0013](decisions/0013-static-customer-ui.md).
+
 ## Known gaps
 
 These are absences, not risks that have been mitigated another way.

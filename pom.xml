@@ -39,6 +39,7 @@
     <module>services/notification-service</module>
     <module>services/audit-service</module>
     <module>services/dispute-service</module>
+    <module>services/settlement-service</module>
   </modules>
 
   <properties>

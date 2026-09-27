@@ -30,5 +30,11 @@ audit-events
 dispute-created
 dispute-status-changed
 
+# --- settlement. Published only, never consumed by settlement-service itself: the service learns about
+# --- money by consuming transaction-settled and transaction-reversed, and these two are how downstream
+# --- financial reporting and alerting learn that a period is final or that something did not reconcile.
+settlement-cycle-finalised
+settlement-break-detected
+
 # --- terminal parking lot for poison messages that exhausted their retries
 dead-letter-events

@@ -176,7 +176,7 @@ app:
   version: ${APP_VERSION:0.1.0-SNAPSHOT}
 
 # -------------------------------------------------------------------------------------------
-# Phase 2: verify the identity the gateway asserted
+# Phase 2: verify the identity the gateway asserted, and Phase 10: where to ask about payments
 # -------------------------------------------------------------------------------------------
 # Spring's relaxed binding would read the environment variable as internal.identity.signing.key, not
 # as this property, so the mapping is written out. No default: a service that starts without the key
@@ -188,3 +188,13 @@ platform:
       # How long a signed identity is honoured after the gateway issued it. Bounds the window in which
       # a role revoked a moment ago is still accepted; it does not eliminate replay.
       max-age-seconds: ${INTERNAL_IDENTITY_MAX_AGE_SECONDS:60}
+  # Where to ask whether a payment is settled and whose it is. The timeout is the important half: a
+  # connect timeout alone only covers a peer that is not listening, while a transaction-service that
+  # accepts the connection and then stalls is bounded by the read timeout. Without it one slow
+  # dependency exhausts this service's request threads and turns into a fully unavailable dispute
+  # API. Two seconds is short on purpose: a caller who cannot get an answer that fast does not get a
+  # case from this call.
+  dispute:
+    transaction-service:
+      base-url: ${TRANSACTION_SERVICE_URL:http://localhost:8084}
+      timeout-ms: ${TRANSACTION_SERVICE_TIMEOUT_MS:2000}

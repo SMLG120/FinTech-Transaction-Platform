@@ -1,0 +1,13 @@
+{
+  "name": "fintech-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Customer web UI: dependency-free static app plus node tests for its API client.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/api.test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

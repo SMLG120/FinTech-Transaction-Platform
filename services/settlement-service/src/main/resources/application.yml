@@ -1,0 +1,218 @@
+# settlement-service
+# Every value that differs between environments is supplied by the environment, never by a
+# checked-in file. No secret has a default here on purpose: a missing variable must fail
+# loudly at startup rather than silently connecting with a known password.
+spring:
+  application:
+    name: settlement-service
+  datasource:
+    url: ${SERVICE_DB_URL:jdbc:postgresql://localhost:5432/fintech_settlement}
+    username: ${SERVICE_DB_USERNAME:fintech_settlement}
+    password: ${SERVICE_DB_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      pool-name: settlement-service-cp
+      maximum-pool-size: ${DB_POOL_MAX_SIZE:20}
+      minimum-idle: ${DB_POOL_MIN_IDLE:5}
+      connection-timeout: 3000
+      validation-timeout: 1000
+      idle-timeout: 300000
+      max-lifetime: 1200000
+      data-source-properties:
+        # Identifies the service in pg_stat_activity, which is the only practical way to attribute a
+        # slow query to a service once several share one cluster.
+        ApplicationName: ${spring.application.name}
+        tcpKeepAlive: true
+        # Bounds a hung query so it cannot pin a pool connection forever. Without this a single blocked
+        # statement can exhaust the pool and fail every request.
+        socketTimeout: ${DB_SOCKET_TIMEOUT_SECONDS:15}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+        order_inserts: true
+        order_updates: true
+        jdbc.batch_size: 50
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    # Off, deliberately, for the reason given in the other services' configs: baseline-on-migrate
+    # records a baseline at version 1 on a non-empty schema, which marks V1 as already applied, so
+    # the first migration never runs and the service then fails schema validation on a table that
+    # was never created — which reads like a broken migration rather than a setting that suppressed it.
+    baseline-on-migrate: false
+    validate-on-migrate: true
+    connect-retries: ${FLYWAY_CONNECT_RETRIES:3}
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      acks: all
+      retries: 5
+      properties:
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 5
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      # String, not JsonSerializer, for the reason the other services give: every producer on this platform
+      # writes the envelope as text, and a JsonSerializer would re-encode it through a type header the
+      # consumer then has to be told about. The outbox pattern's promise is that the stored payload is the
+      # sent payload, and a second serialiser breaks that promise silently.
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+    consumer:
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      properties:
+        isolation.level: read_committed
+    listener:
+      # The container acknowledges offsets only after the handler returns, so a crash mid-handling replays
+      # the record instead of losing it. For this service that is the difference between a cycle that is
+      # retried and a statement that is permanently short.
+      ack-mode: record
+      # One, deliberately. Posting to a cycle is a read-then-write against a shared row — two threads
+      # adding lines to the same day's cycle at once would each compute a total from what they had read, and
+      # one of the two totals would be wrong. Concurrency here is a correctness parameter, not a throughput
+      # one, and the fix if statement volume ever demands it is sharding by business date, not raising this
+      # number. See SettlementService.openCycle.
+      concurrency: ${KAFKA_CONCURRENCY:1}
+      missing-topics-fatal: false
+      # NOTE: the retry and dead-letter policy is NOT here, and its absence would be exactly the bug
+      # fraud-service had. Spring Boot's KafkaProperties.Listener has no `max-attempts`, `back-off` or
+      # `dead-letter` properties, and a @ConfigurationProperties class silently ignores keys it does not
+      # know rather than failing. So those keys would document a policy and apply none, leaving the
+      # container on Spring Kafka's default: retry, log, commit, drop. A `transaction-settled` event that
+      # could not be read would mean money in the ledger that never reached a statement, and the
+      # reconciliation break it eventually caused would be unable to say which payment was missing.
+      # It lives under `app.settlement.dead-letter` and is applied by KafkaErrorHandlingConfiguration.
+
+server:
+  port: ${SERVER_PORT:8089}
+  shutdown: graceful
+  error:
+    # Never render a stack trace into a response body; the correlation id is the contract.
+    include-stacktrace: never
+    include-message: never
+    include-binding-errors: never
+  forward-headers-strategy: framework
+  max-http-request-header-size: 16KB
+  tomcat:
+    max-swallow-size: 2MB
+    max-http-form-post-size: 2MB
+  servlet:
+    session:
+      # The platform is a pure token-authenticated API: no server-side session state.
+      persistent: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        # Health and Prometheus are the only endpoints reachable without a token, and they are
+        # network-restricted in addition (see infrastructure/kubernetes). env, configprops, heapdump and
+        # loggers expose secrets or internals and stay closed.
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: when-authorized
+      show-components: when-authorized
+    prometheus:
+      access: read_only
+  metrics:
+    tags:
+      application: ${spring.application.name}
+    distribution:
+      # Bucket boundaries around this service's latency budget, which is dominated by a single indexed
+      # insert and an outbox write rather than by anything interesting.
+      percentiles-histogram.http.server.requests: true
+      slo:
+        http.server.requests: 50ms,100ms,200ms,500ms,1s,2s
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+  info:
+    env:
+      enabled: false
+  tracing:
+    enabled: false
+
+logging:
+  level:
+    root: INFO
+    com.fintech.platform: ${LOG_LEVEL_PLATFORM:INFO}
+    org.springframework.kafka: ${LOG_LEVEL_KAFKA:WARN}
+    org.apache.kafka: ${LOG_LEVEL_KAFKA_CLIENT:WARN}
+    org.hibernate.SQL: ${LOG_LEVEL_SQL:WARN}
+  structured:
+    # ECS JSON so log aggregation can index fields instead of grepping strings.
+    format:
+      console: ${LOG_FORMAT:ecs}
+
+app:
+  environment: ${APP_ENVIRONMENT:local}
+  version: ${APP_VERSION:0.1.0-SNAPSHOT}
+
+  # ---------------------------------------------------------------------------------------
+  # Phase 7: settlement
+  # ---------------------------------------------------------------------------------------
+  settlement:
+    # The consumer group. One group, so one instance of this service applies a movement once; a second
+    # instance joining the same group takes a share of the partitions, which is how the service scales.
+    # Read by the @KafkaListener placeholders on SettlementConsumer, hence the nesting under settlement
+    # rather than a bare `app.consumer-group`: a listener that reads one name while the config declares
+    # the other works only if the placeholder's default happens to match, and the setting is then
+    # silently ignored.
+    consumer-group: ${SETTLEMENT_CONSUMER_GROUP:settlement-service}
+
+    # What happens to an event this consumer cannot read: retried a bounded number of times, then
+    # republished on the dead-letter topic with the reason attached, so a poison movement parks where
+    # somebody can find it instead of blocking every later movement behind it on the same partition.
+    # Applied by KafkaErrorHandlingConfiguration; see the note under spring.kafka.listener for why
+    # this is not configured there.
+    dead-letter:
+      topic: dead-letter-events
+      max-attempts: 3
+      initial-interval-ms: 1000
+      multiplier: 2.0
+      max-interval-ms: 10000
+
+  outbox:
+    # Read by the @Scheduled placeholder on OutboxRelay, which is the only thing that consults it.
+    poll-interval-millis: 500
+    # Gates the scheduler. False in every @SpringBootTest, and false in a deployment that runs the relay
+    # as a separate process. Named the same as the other services' switch on purpose, so one setting
+    # covers the platform.
+    relay-enabled: ${SETTLEMENT_OUTBOX_RELAY_ENABLED:true}
+
+# -------------------------------------------------------------------------------------------
+# Phase 2: verify the identity the gateway asserted
+# -------------------------------------------------------------------------------------------
+# Spring's relaxed binding would read the environment variable as internal.identity.signing.key, not
+# as this property, so the mapping is written out. No default: a service that starts without the key
+# must fail to register the verification filter loudly rather than run while trusting unsigned headers.
+platform:
+  security:
+    internal-identity:
+      signing-key: ${INTERNAL_IDENTITY_SIGNING_KEY:}
+      # How long a signed identity is honoured after the gateway issued it. Bounds the window in which a
+      # role revoked a moment ago is still accepted; it does not eliminate replay.
+      max-age-seconds: ${INTERNAL_IDENTITY_MAX_AGE_SECONDS:60}
+    # There is deliberately no `subject-digest.key` in this file, and that absence is a design statement
+    # rather than an oversight.
+    #
+    # The other services each hold a key that digests the Keycloak subjects they record, so a subject in
+    # one database cannot be joined to a subject in another. This service has no reason to record a
+    # subject at all: a statement is about money moving between a platform and a merchant, and a
+    # per-customer pseudonym is not an input to that question. The `ownerSubjectDigest` on the events it
+    # consumes is parsed and dropped rather than stored — see TransactionMovementEvent.
+    #
+    # So there is nothing here to unjoin. A service that cannot reproduce a subject digest cannot leak
+    # one, which is a stronger property than a rule saying it does not, and it is why no empty
+    # `subject-digest` block was left behind to be filled in by a later phase.

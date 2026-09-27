@@ -1,0 +1,23 @@
+:root { color-scheme: light; --ink: #1a1a1a; --muted: #666; --line: #ddd; --bad: #a00; --ok: #0a5c36; }
+* { box-sizing: border-box; }
+body { font-family: system-ui, sans-serif; color: var(--ink); max-width: 44rem; margin: 0 auto; padding: 1rem; }
+header { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 2px solid var(--ink); padding-bottom: 0.5rem; }
+h1 { font-size: 1.25rem; margin: 0; }
+.demo { font-size: 0.7rem; font-weight: normal; color: var(--muted); }
+#tabs { display: flex; flex-wrap: wrap; gap: 0.25rem; margin: 1rem 0; }
+#tabs button { padding: 0.4rem 0.7rem; border: 1px solid var(--line); background: #fff; cursor: pointer; }
+#tabs button.active { background: var(--ink); color: #fff; }
+#logout { margin-left: auto; }
+form { display: grid; gap: 0.5rem; margin: 0.75rem 0; }
+label { display: grid; gap: 0.2rem; font-size: 0.9rem; }
+input, select, button { font: inherit; padding: 0.4rem; }
+button { cursor: pointer; }
+button:disabled { cursor: wait; opacity: 0.6; }
+.error { color: var(--bad); border: 1px solid var(--bad); padding: 0.5rem; }
+.ok { color: var(--ok); }
+.hint { color: var(--muted); font-size: 0.85rem; }
+ul { list-style: none; padding: 0; display: grid; gap: 0.5rem; }
+li.card, li.row { border: 1px solid var(--line); padding: 0.5rem; display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: baseline; }
+.tag { font-size: 0.75rem; border: 1px solid var(--line); padding: 0.1rem 0.4rem; }
+.mono { font-family: ui-monospace, monospace; font-size: 0.85rem; }
+.card-number { font-family: ui-monospace, monospace; font-size: 1.1rem; letter-spacing: 0.1em; }
