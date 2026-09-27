@@ -1,0 +1,108 @@
+# syntax=docker/dockerfile:1
+#
+# One Dockerfile for all nine Spring Boot services.
+#
+# The build context is the repository root and the module is selected with --build-arg MODULE=...
+# One template rather than nine near-identical files: a change to how the platform is packaged
+# lands once, and it is impossible for two services to drift apart on security-relevant build
+# settings such as the runtime user or the JVM flags.
+
+ARG MAVEN_IMAGE=maven:3.9.16-eclipse-temurin-21
+ARG RUNTIME_IMAGE=eclipse-temurin:21-jre-noble
+
+# --------------------------------------------------------------------------------------- build
+FROM ${MAVEN_IMAGE} AS build
+
+ARG MODULE
+ARG MAVEN_ARGS=""
+
+WORKDIR /build
+
+# Plain COPY, deliberately. `COPY --mount=type=cache` is rejected by every published dockerfile
+# frontend, including the labs builds, so a Dockerfile using it builds nowhere but on a machine
+# with an unreleased BuildKit.
+#
+# The dependency cache still works, and this is where the time actually goes: the mount is on the
+# mvn step below, so the (large) artifact download survives a source-only change even though the
+# COPY layer above it is invalidated. Caching the source copy too would be nicer, not better.
+COPY pom.xml ./
+COPY platform ./platform
+COPY services ./services
+
+# `sharing=locked` stops parallel image builds from corrupting the shared local Maven repository.
+RUN --mount=type=cache,target=/root/.m2,sharing=locked \
+    set -eux; \
+    mvn -B -ntp -e \
+        -pl "${MODULE}" -am \
+        package \
+        -DskipTests \
+        -Dmaven.test.skip=true \
+        -Djacoco.skip=true \
+        -Dspotless.check.skip=true \
+        ${MAVEN_ARGS}; \
+    jar="$(find "/build/${MODULE}/target" -maxdepth 1 -type f -name '*.jar' \
+             ! -name '*-plain.jar' ! -name '*-sources.jar' ! -name '*-javadoc.jar' | head -n 1)"; \
+    test -n "${jar}"; \
+    cp "${jar}" /build/app.jar
+
+# ------------------------------------------------------------------------------------- runtime
+FROM ${RUNTIME_IMAGE} AS runtime
+
+ARG SERVICE_NAME=unknown
+ARG APP_VERSION=0.1.0-SNAPSHOT
+
+# curl is installed for exactly one reason: `docker compose` health checks and the local debugging
+# helper in scripts/ run *inside* the container and need an HTTP client. It is not a runtime
+# dependency of the application. The Kubernetes manifests in Phase 15 use HTTP probes and need none
+# of this, which is the configuration production should converge on.
+USER root
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends curl tini; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/*; \
+    groupadd --system --gid 1001 fintech; \
+    useradd --system --uid 1001 --gid fintech --home-dir /home/fintech --shell /usr/sbin/nologin fintech; \
+    mkdir -p /home/fintech
+
+WORKDIR /opt/app
+
+# Spring Boot's `jarmode=tools extract` explodes the fat jar into a launcher jar plus a `lib/`
+# directory. The dependency jars are therefore a *separate, earlier* Docker layer from the
+# application classes, so a code-only change re-pushes a few hundred kilobytes instead of the whole
+# 90 MB image. See docs/deployment.md.
+#
+# The launcher is named after the jar it was extracted from, and the source jar is already called
+# app.jar, so no rename is needed. The layout is asserted rather than assumed: an extract that
+# silently produced a different name would otherwise fail much later, at container start, with a
+# ClassNotFoundException that points nowhere near this step.
+COPY --from=build --chown=fintech:fintech /build/app.jar /tmp/app.jar
+RUN set -eux; \
+    java -Djarmode=tools -jar /tmp/app.jar extract --destination /opt/app; \
+    test -f /opt/app/app.jar; \
+    test -d /opt/app/lib; \
+    test -n "$(find /opt/app/lib -maxdepth 1 -name '*.jar' -print -quit)"; \
+    rm /tmp/app.jar; \
+    chown -R fintech:fintech /opt/app
+
+USER fintech:fintech
+
+ENV SERVICE_NAME=${SERVICE_NAME} \
+    APP_VERSION=${APP_VERSION} \
+    APP_ENVIRONMENT=local \
+    LANG=C.UTF-8 \
+    # Sized as a percentage rather than an absolute heap so the same image is correct on a laptop
+    # and on a 32 GB node. Metaspace and direct memory are capped explicitly because they are NOT
+    # covered by MaxRAMPercentage, and an uncapped metaspace is a common cause of a container being
+    # OOM-killed while the JVM still believes it has headroom.
+    JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=70.0 -XX:MaxMetaspaceSize=256m -XX:+UseG1GC -XX:+ExitOnOutOfMemoryError -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp -Djava.security.egd=file:/dev/urandom -Dfile.encoding=UTF-8 -Duser.timezone=UTC"
+
+ENV SERVER_PORT=8080
+EXPOSE 8080
+
+# tini reaps the zombies that a JVM in a container otherwise leaves behind, and forwards SIGTERM so
+# `server.shutdown=graceful` can actually drain in-flight requests before the pod is killed.
+ENTRYPOINT ["/usr/bin/tini", "--", "java", "-jar", "/opt/app/app.jar"]
+
+HEALTHCHECK --interval=10s --timeout=3s --start-period=45s --retries=5 \
+    CMD curl --fail --silent --show-error "http://127.0.0.1:${SERVER_PORT}/actuator/health/readiness" || exit 1

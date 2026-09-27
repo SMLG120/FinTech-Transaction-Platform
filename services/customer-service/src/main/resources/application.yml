@@ -1,0 +1,205 @@
+# customer-service
+# Every value that differs between environments is supplied by the environment, never by a
+# checked-in file. No secret has a default here on purpose: a missing variable must fail
+# loudly at startup rather than silently connecting with a known password.
+spring:
+  application:
+    name: customer-service
+  datasource:
+    url: ${SERVICE_DB_URL:jdbc:postgresql://localhost:5432/fintech_customers}
+    username: ${SERVICE_DB_USERNAME:fintech_customers}
+    password: ${SERVICE_DB_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      pool-name: customer-service-cp
+      maximum-pool-size: ${DB_POOL_MAX_SIZE:20}
+      minimum-idle: ${DB_POOL_MIN_IDLE:5}
+      connection-timeout: 3000
+      validation-timeout: 1000
+      idle-timeout: 300000
+      max-lifetime: 1200000
+      data-source-properties:
+        # Identifies the service in pg_stat_activity, which is the only practical way
+        # to attribute a slow query to a service once several share one cluster.
+        ApplicationName: ${spring.application.name}
+        tcpKeepAlive: true
+        # Bounds a hung query so it cannot pin a pool connection forever. Without this
+        # a single blocked statement can exhaust the pool and fail every request.
+        socketTimeout: ${DB_SOCKET_TIMEOUT_SECONDS:15}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+        order_inserts: true
+        order_updates: true
+        jdbc.batch_size: 50
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    # Off, deliberately, and this is not a default worth copying from a tutorial.
+    #
+    # baseline-on-migrate tells Flyway to mark a non-empty schema as up to date instead of migrating
+    # it. It is for adopting a database that already has a schema this repository does not know
+    # about. Every database here is created empty by the Postgres init script, so there is nothing
+    # to adopt, and with Flyway's default baseline version of 1 the feature does real damage: it
+    # records a baseline at version 1, which marks V1 as already applied, so the first migration
+    # never runs. The service then fails Hibernate's schema validation on a table that was never
+    # created, which reads like a broken migration rather than a setting that suppressed it.
+    baseline-on-migrate: false
+    validate-on-migrate: true
+    # Migrations are reviewed code, never applied by the application at runtime in prod.
+    # Local Docker Compose only; Phase 15 sets FLYWAY_ENABLED=false in the deployed chart.
+    # Low default on purpose. Compose gates startup on the postgres healthcheck, so a retry is
+    # only insurance; a high value turns a bad connection string into a multi-minute hang that
+    # reads like a slow start rather than a misconfiguration.
+    connect-retries: ${FLYWAY_CONNECT_RETRIES:3}
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      acks: all
+      retries: 5
+      properties:
+        # Required for exactly-once *processing* support: makes a retried send a new
+        # logical send rather than a second record appearing on the topic.
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 5
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      # String, not JsonSerializer. Every producer on this platform writes the envelope as text, and a
+      # JsonSerializer would re-encode it through a type header that the consumer then has to be told
+      # about. An event published as JSON through two serialisers is JSON that has been serialised
+      # twice, and the bytes in the topic are then not the bytes the producing transaction wrote to its
+      # outbox. The outbox pattern's promise is that the stored payload is the sent payload.
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+    consumer:
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      # String, the mirror of the producer above. A listener here receives the envelope as the text the
+      # producing transaction serialised, and reads it with its own ObjectMapper. A JsonDeserializer
+      # would instead bind the envelope against the handler's parameter type, so a handler taking a
+      # String would be handed a failed parse of a JSON object, and the type header it adds is a second
+      # thing to keep in step with the producer.
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      properties:
+        isolation.level: read_committed
+    listener:
+      # The container acknowledges offsets only after the handler returns, so a crash
+      # mid-handling replays the record instead of losing it.
+      ack-mode: record
+      concurrency: ${KAFKA_CONCURRENCY:3}
+      missing-topics-fatal: false
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 2s
+      lettuce:
+        pool:
+          max-active: 16
+          max-idle: 8
+          min-idle: 2
+
+server:
+  port: ${SERVER_PORT:8082}
+  shutdown: graceful
+  error:
+    # Never render a stack trace into a response body; the correlation id is the contract.
+    include-stacktrace: never
+    include-message: never
+    include-binding-errors: never
+  forward-headers-strategy: framework
+  max-http-request-header-size: 16KB
+  tomcat:
+    max-swallow-size: 2MB
+    max-http-form-post-size: 2MB
+  servlet:
+    session:
+      # The platform is a pure token-authenticated API: no server-side session state.
+      persistent: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        # Health and Prometheus are the only endpoints reachable without a token, and
+        # they are network-restricted in addition (see infrastructure/kubernetes).
+        # env, configprops, heapdump and loggers expose secrets or internals and stay closed.
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: when-authorized
+      show-components: when-authorized
+    prometheus:
+      access: read_only
+  metrics:
+    tags:
+      # environment and version are added automatically by ObservabilityAutoConfiguration.
+      application: ${spring.application.name}
+    distribution:
+      # Bucket boundaries chosen around the latency budget of a payment authorisation.
+      # Buckets that do not straddle the p95 hide exactly the regressions worth alerting on.
+      percentiles-histogram.http.server.requests: true
+      slo:
+        http.server.requests: 50ms,100ms,200ms,500ms,1s,2s
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+  info:
+    env:
+      enabled: false
+  tracing:
+    enabled: false
+
+logging:
+  level:
+    root: INFO
+    com.fintech.platform: ${LOG_LEVEL_PLATFORM:INFO}
+    org.springframework.kafka: ${LOG_LEVEL_KAFKA:WARN}
+    org.apache.kafka: ${LOG_LEVEL_KAFKA_CLIENT:WARN}
+    org.hibernate.SQL: ${LOG_LEVEL_SQL:WARN}
+  structured:
+    # ECS JSON so log aggregation can index fields instead of grepping strings.
+    format:
+      console: ${LOG_FORMAT:ecs}
+
+app:
+  environment: ${APP_ENVIRONMENT:local}
+  version: ${APP_VERSION:0.1.0-SNAPSHOT}
+
+# -------------------------------------------------------------------------------------------
+# Phase 2: verify the identity the gateway asserted
+# -------------------------------------------------------------------------------------------
+# Spring's relaxed binding would read the environment variable as internal.identity.signing.key, not
+# as this property, so the mapping is written out. No default: a service that starts without the key
+# must fail to register the verification filter loudly rather than run while trusting unsigned headers.
+platform:
+  security:
+    internal-identity:
+      signing-key: ${INTERNAL_IDENTITY_SIGNING_KEY:}
+      # How long a signed identity is honoured after the gateway issued it. Bounds the window in which
+      # a role revoked a moment ago is still accepted; it does not eliminate replay.
+      max-age-seconds: ${INTERNAL_IDENTITY_MAX_AGE_SECONDS:60}
+  # -----------------------------------------------------------------------------------------
+  # Phase 3: protect PII at rest
+  # -----------------------------------------------------------------------------------------
+  customer:
+    pii:
+      # No default, unlike the operational settings above. PiiProperties validates the value at
+      # binding time and refuses to construct without it, so a deployment that forgets the variable
+      # fails at startup instead of writing PII that nothing can later prove was encrypted. The
+      # empty default is not a fallback value; it is what lets Spring attempt the bind and produce
+      # the error message that names this property.
+      master-key: ${CUSTOMER_PII_MASTER_KEY:}
+      # Stamped into every ciphertext so a future rotation can still read existing rows. Bumping it
+      # makes previously written values unreadable until a build that knows the old version is used to
+      # re-encrypt them, which is why rotation is a migration and not a config change.
+      key-version: ${CUSTOMER_PII_KEY_VERSION:1}

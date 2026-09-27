@@ -1,0 +1,50 @@
+# Build context exclusions for the shared service Dockerfile.
+#
+# The build context is the repository root, so anything not explicitly excluded
+# here is uploaded to the Docker daemon on every build. That is slow, and it
+# also means local secrets can end up inside an image layer.
+#
+# .env is excluded deliberately: it holds generated credentials, and a file
+# that should never be copied into an image must never reach the build context
+# in the first place. Context exclusion is defence in depth behind "the
+# Dockerfile never COPYs it".
+
+# ---- secrets: never let these reach the daemon
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.jks
+**/secrets/**
+
+# ---- VCS + IDE
+.git
+.gitignore
+.github
+.idea
+*.iml
+.vscode
+.DS_Store
+
+# ---- build output: the image builds from source inside the container
+**/target/
+**/build/
+**/node_modules/
+**/dist/
+*.class
+*.jar
+*.war
+
+# ---- docs and local scripts: not needed to produce a jar
+docs/
+README.md
+LICENSE
+*.md
+scripts/
+
+# ---- observability state
+infrastructure/prometheus/data/
+infrastructure/grafana/data/
+**/*.tsdb

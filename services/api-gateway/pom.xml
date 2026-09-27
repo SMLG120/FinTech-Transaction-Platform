@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>com.fintech.platform</groupId>
+    <artifactId>secure-fintech-platform</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <relativePath>../../pom.xml</relativePath>
+  </parent>
+
+  <artifactId>api-gateway</artifactId>
+  <name>Service :: Api Gateway</name>
+  <description>Single ingress for the platform: TLS termination point, JWT verification, per-route rate limiting, CORS, correlation ids and security headers.</description>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework.cloud</groupId>
+      <!-- The server-webflux starter, not the deprecated spring-cloud-starter-gateway. The
+           deprecation is not cosmetic: the old starter still pulls spring-cloud-gateway-server,
+           which the 4.x line is removing. -->
+      <artifactId>spring-cloud-starter-gateway-server-webflux</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-security</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-registry-prometheus</artifactId>
+    </dependency>
+    <!--
+      Transport-agnostic module only: it brings the shared contracts and the metric-tag
+      auto-configuration without dragging in the servlet stack, which the reactive gateway must not
+      have on its classpath.
+    -->
+    <dependency>
+      <groupId>com.fintech.platform</groupId>
+      <artifactId>platform-common</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.security</groupId>
+      <artifactId>spring-security-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!--
+      Test scope only. The point of IdentityContractTest is to run the gateway's signer into the
+      servlet service's real verifier, which means this module needs the service-side filter on its
+      test classpath. Production code must not depend on platform-common-web: the gateway is reactive
+      and this module is servlet.
+    -->
+    <dependency>
+      <groupId>com.fintech.platform</groupId>
+      <artifactId>platform-common-web</artifactId>
+      <scope>test</scope>
+      <exclusions>
+        <!--
+          Excluding the starter, not the classes. spring-boot-starter-web also brings Tomcat and the
+          servlet auto-configurations, and their mere presence makes Spring Boot deduce a SERVLET
+          application type. The gateway would then try to start as an MVC app and every context in this
+          module would fail. spring-web needs no replacement: webflux already provides it at compile
+          scope, and redeclaring it here would narrow that scope and break the gateway's own sources.
+        -->
+        <exclusion>
+          <groupId>org.springframework.boot</groupId>
+          <artifactId>spring-boot-starter-web</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <!--
+      The Jakarta Servlet API ships inside tomcat-embed-core in Spring Boot 3.5. Taking just that
+      artifact gives the filter under test its servlet types without spring-webmvc, and the presence of
+      DispatcherServlet is exactly what would drag this reactive module back to a servlet context.
+    -->
+    <dependency>
+      <groupId>org.apache.tomcat.embed</groupId>
+      <artifactId>tomcat-embed-core</artifactId>
+      <scope>test</scope>
+      <exclusions>
+        <!-- Annotations only; the servlet types are already inside the artifact this test needs. -->
+        <exclusion>
+          <groupId>org.apache.tomcat</groupId>
+          <artifactId>tomcat-annotations-api</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+      </plugin>
+    </plugins>
+  </build>
+</project>

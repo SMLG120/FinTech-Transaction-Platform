@@ -1,0 +1,259 @@
+{
+  "realm": "fintech",
+  "displayName": "FinTech Platform (local development)",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "registrationEmailAsUsername": false,
+  "rememberMe": false,
+  "verifyEmail": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": true,
+  "permanentLockout": false,
+  "maxFailureWaitSeconds": 900,
+  "minimumQuickLoginWaitSeconds": 60,
+  "waitIncrementSeconds": 60,
+  "quickLoginCheckMilliSeconds": 1000,
+  "maxDeltaTimeSeconds": 43200,
+  "failureFactor": 10,
+  "accessTokenLifespan": 300,
+  "accessTokenLifespanForImplicitFlow": 300,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 36000,
+  "ssoSessionIdleTimeoutRememberMe": 1800,
+  "ssoSessionMaxLifespanRememberMe": 36000,
+  "offlineSessionIdleTimeout": 2592000,
+  "offlineSessionMaxLifespanEnabled": true,
+  "offlineSessionMaxLifespan": 5184000,
+  "clientSessionIdleTimeout": 0,
+  "clientSessionMaxLifespan": 0,
+  "accessCodeLifespan": 60,
+  "accessCodeLifespanUserAction": 300,
+  "accessCodeLifespanLogin": 1800,
+  "revokeRefreshToken": true,
+  "refreshTokenMaxReuse": 0,
+  "internationalizationEnabled": true,
+  "supportedLocales": [
+    "en"
+  ],
+  "defaultLocale": "en",
+  "roles": {
+    "realm": [
+      {
+        "name": "PLATFORM_ADMIN",
+        "description": "Operates the platform. Not a business role, and deliberately distinct from any role that moves money."
+      },
+      {
+        "name": "CUSTOMER",
+        "description": "The authenticated owner of an account. May act only on their own resources, which is enforced per resource in later phases."
+      },
+      {
+        "name": "SUPPORT_AGENT",
+        "description": "Handles customer enquiries. Read access to customer context; cannot move money."
+      },
+      {
+        "name": "COMPLIANCE_OFFICER",
+        "description": "Reviews regulatory obligations and can approve or block where policy requires it."
+      },
+      {
+        "name": "AUDITOR",
+        "description": "Read-only access to the audit trail. No write access to any domain."
+      },
+      {
+        "name": "FRAUD_ANALYST",
+        "description": "Works the fraud alert queue: claims alerts, closes them, re-scores payments and overrules scores up to the configured cap. Deliberately separate from COMPLIANCE_OFFICER, who supervises the queue without being able to work it \u2014 an auditor who could claim an alert would be editing the evidence they audit."
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "fintech-api",
+      "name": "FinTech Platform API",
+      "description": "The resource server identity. Present in the token's aud claim so a token minted for a different client cannot be replayed against this API.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "bearerOnly": true,
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "frontchannelLogout": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "attributes": {
+        "access.token.lifespan": "300"
+      },
+      "fullScopeAllowed": true
+    },
+    {
+      "clientId": "fintech-web",
+      "name": "FinTech Web and CLI (local development)",
+      "description": "Public client used by local tooling to obtain tokens. directAccessGrantsEnabled exists so scripts/get-token.sh can fetch a token without a browser; it is disabled in every deployed environment.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "bearerOnly": false,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "frontchannelLogout": true,
+      "rootUrl": "http://localhost:3000",
+      "baseUrl": "/",
+      "adminUrl": "",
+      "redirectUris": [
+        "http://localhost:3000/*",
+        "http://localhost:8081/*"
+      ],
+      "webOrigins": [
+        "http://localhost:3000",
+        "http://localhost:8081"
+      ],
+      "optionalClientScopes": [
+        "offline_access"
+      ],
+      "attributes": {
+        "access.token.lifespan": "300",
+        "post.logout.redirect.uris": "http://localhost:3000/*",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "backchannel.logout.session.required": "true",
+        "require.pushed.authorization.requests": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "fintech-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "fintech-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ],
+      "fullScopeAllowed": true,
+      "defaultClientScopes": [
+        "roles",
+        "web-origins",
+        "profile",
+        "email",
+        "acr",
+        "basic"
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "admin@fintech.test",
+      "email": "admin@fintech.test",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Platform",
+      "lastName": "Administrator",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "fintech-dev-only",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "PLATFORM_ADMIN"
+      ]
+    },
+    {
+      "username": "customer@fintech.test",
+      "email": "customer@fintech.test",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Casey",
+      "lastName": "Customer",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "fintech-dev-only",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "CUSTOMER"
+      ]
+    },
+    {
+      "username": "agent@fintech.test",
+      "email": "agent@fintech.test",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Alex",
+      "lastName": "Agent",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "fintech-dev-only",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "SUPPORT_AGENT"
+      ]
+    },
+    {
+      "username": "auditor@fintech.test",
+      "email": "auditor@fintech.test",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Robin",
+      "lastName": "Auditor",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "fintech-dev-only",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "AUDITOR"
+      ]
+    },
+    {
+      "username": "compliance@fintech.test",
+      "email": "compliance@fintech.test",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Jordan",
+      "lastName": "Compliance",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "fintech-dev-only",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "COMPLIANCE_OFFICER"
+      ]
+    },
+    {
+      "username": "analyst@fintech.test",
+      "email": "analyst@fintech.test",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Riley",
+      "lastName": "Fraud",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "fintech-dev-only",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "FRAUD_ANALYST"
+      ]
+    }
+  ]
+}

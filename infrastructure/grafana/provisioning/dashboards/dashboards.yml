@@ -1,0 +1,21 @@
+# Grafana dashboard provisioning.
+#
+# `allowUiUpdates: false` so a dashboard edit made in the UI cannot silently diverge from the copy
+# in git. An operator who wants to experiment saves an exported JSON to a scratch file; the copy
+# under version control stays the one that is reproduced on the next `docker compose up`.
+
+apiVersion: 1
+
+providers:
+  - name: platform
+    orgId: 1
+    folder: Platform
+    type: file
+    disableDeletion: true
+    # A dashboard edited in the UI and then reverted on disk would otherwise be overwritten without
+    # warning. Failing to update is a clearer signal than silent replacement.
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

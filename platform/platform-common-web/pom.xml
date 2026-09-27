@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>com.fintech.platform</groupId>
+    <artifactId>secure-fintech-platform</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <relativePath>../../pom.xml</relativePath>
+  </parent>
+
+  <artifactId>platform-common-web</artifactId>
+  <name>Platform :: Common Web</name>
+  <description>Servlet-specific cross-cutting web behaviour: correlation-id propagation and the centralised
+    exception-to-error-response translation.
+
+    Kept separate from platform-common so that the reactive API gateway, which must not have
+    spring-webmvc on its classpath, can depend on the framework-agnostic module only.</description>
+
+  <dependencies>
+    <dependency>
+      <groupId>com.fintech.platform</groupId>
+      <artifactId>platform-common</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-validation</artifactId>
+    </dependency>
+    <!--
+      Core only, deliberately not spring-boot-starter-security: the security filter chain is a
+      deliberate, per-service decision made in the authentication phase, not something this shared
+      module should impose. AccessDeniedException is needed so authorisation failures raised inside
+      a controller method are translated into the platform error contract rather than a stack trace.
+    -->
+    <dependency>
+      <groupId>org.springframework.security</groupId>
+      <artifactId>spring-security-core</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.security</groupId>
+      <artifactId>spring-security-web</artifactId>
+    </dependency>
+    <!--
+      For org.springframework.dao exception types only. Translating optimistic/pessimistic locking
+      and integrity failures into governed 409 responses centrally is the reason: those exceptions
+      are thrown from deep inside a transaction and would otherwise surface as 500s, teaching every
+      client that a lost race means "the platform is broken".
+    -->
+    <dependency>
+      <groupId>org.springframework</groupId>
+      <artifactId>spring-tx</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>

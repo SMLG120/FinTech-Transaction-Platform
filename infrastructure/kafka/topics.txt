@@ -1,0 +1,34 @@
+# Kafka topic catalogue — the single source of truth for local provisioning.
+#
+# Read by the kafka-init one-shot job in docker-compose.yml, which creates each topic on broker
+# start, and asserted against com.fintech.platform.common.event.KafkaTopics.ALL by
+# TopicCatalogueTest.
+#
+# Deliberately a separate file rather than a hard-coded list inside compose: a topic that exists in
+# Java but is never provisioned fails only at runtime, when the first event is published to it. The
+# test that compares the two makes that class of bug a build failure instead.
+#
+# Blank lines and lines beginning with # are ignored.
+
+# --- transaction lifecycle. One topic per state change, so a consumer can subscribe to exactly the
+# --- transitions it cares about without filtering a general-purpose stream.
+transaction-created
+transaction-authorized
+transaction-declined
+transaction-settled
+transaction-reversed
+
+# --- fraud / risk
+fraud-analysis-requested
+fraud-analysis-completed
+
+# --- side effects
+notification-events
+audit-events
+
+# --- disputes
+dispute-created
+dispute-status-changed
+
+# --- terminal parking lot for poison messages that exhausted their retries
+dead-letter-events

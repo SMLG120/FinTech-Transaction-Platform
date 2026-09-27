@@ -1,0 +1,24 @@
+# Grafana datasource provisioning.
+#
+# Provisioned rather than clicked into the UI because a dashboard that depends on a datasource
+# somebody created by hand is not reproducible: it works on the machine where it was built and
+# nowhere else. Every Grafana instance started from this repository gets the same datasources.
+#
+# The Prometheus URL is the in-network service name, not localhost: Grafana runs in a container, so
+# localhost would be Grafana's own container.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    uid: prometheus
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      # Matches the scrape interval, so the step of a range query lines up with the resolution of
+      # the data instead of resampling it.
+      timeInterval: 10s
+      httpMethod: POST

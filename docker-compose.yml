@@ -1,0 +1,714 @@
+# Local development environment for the Secure FinTech Transaction Platform.
+#
+#   ./scripts/bootstrap.sh      # generate .env with random secrets (required first)
+#   docker compose up -d postgres redis kafka     # infrastructure only, for running one service on the host
+#   docker compose up --build                     # everything
+#
+# SECURITY POSTURE OF THIS FILE
+#   * Nothing is published to 0.0.0.0. Every host binding uses 127.0.0.1, so the stack is not
+#     reachable from the local network.
+#   * `env_file:` is deliberately NOT used for the application services. Compose would inject every
+#     variable in .env into every container, handing the transaction service the Postgres superuser
+#     password and the Keycloak admin password. Instead each service declares exactly the variables
+#     it needs, and ${VAR:?message} makes compose fail with a readable message when one is absent.
+#   * No secret is defaulted here. A missing value must fail loudly, not silently fall back to a
+#     password that is published on the internet.
+#
+# All traffic is plaintext. That is acceptable on a loopback-bound development machine and is NOT
+# what production looks like: docs/deployment.md describes the TLS/mTLS and network-policy design
+# that Phase 15 replaces this file's networking with.
+
+name: secure-fintech-platform
+
+# ===============================================================================================
+# Shared fragments
+# ===============================================================================================
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    # Without an explicit cap, json-file grows until the disk is full. This is one of the most
+    # common ways a container host fails in practice, so it is set for every service.
+    max-size: "10m"
+    max-file: "3"
+
+# Applied to all nine Spring Boot services, so a security-relevant setting cannot drift between them.
+x-service: &service
+  restart: unless-stopped
+  networks: [fintech]
+  logging: *default-logging
+  # Long enough for server.shutdown=graceful to drain in-flight requests before SIGKILL.
+  stop_grace_period: 30s
+
+# Environment shared by all nine services. Secrets are opt-in per service below, never inherited.
+x-service-env: &service-env
+  APP_ENVIRONMENT: ${APP_ENVIRONMENT:-local}
+  APP_VERSION: ${APP_VERSION:-0.1.0-SNAPSHOT}
+  LOG_FORMAT: ${LOG_FORMAT:-ecs}
+  LOG_LEVEL_PLATFORM: ${LOG_LEVEL_PLATFORM:-INFO}
+  LOG_LEVEL_SQL: ${LOG_LEVEL_SQL:-WARN}
+  LOG_LEVEL_KAFKA: ${LOG_LEVEL_KAFKA:-WARN}
+  DB_POOL_MAX_SIZE: ${DB_POOL_MAX_SIZE:-20}
+  DB_POOL_MIN_IDLE: ${DB_POOL_MIN_IDLE:-5}
+  KAFKA_CONCURRENCY: ${KAFKA_CONCURRENCY:-3}
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+  REDIS_PASSWORD: ${REDIS_PASSWORD:?run ./scripts/bootstrap.sh to create .env}
+  # The ADR-0004 trust key. Every service gets the same one, which is the interim compromise: any
+  # service can mint an identity for any caller, so the services must not be mutually reachable by
+  # anything but the gateway until mTLS replaces this in Phase 15. Generating per-service keys would
+  # be more correct and would also stop the gateway from speaking to any service, so it is one key
+  # for now, deliberately and visibly.
+  INTERNAL_IDENTITY_SIGNING_KEY: ${INTERNAL_IDENTITY_SIGNING_KEY:?run ./scripts/bootstrap.sh to create .env}
+  # Sized as a percentage so the same image is correct on a laptop and on a node. Metaspace is
+  # capped separately because MaxRAMPercentage does not cover it, and an uncapped metaspace is a
+  # common cause of a container being OOM-killed while the JVM still believes it has headroom.
+  JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=70.0 -XX:MaxMetaspaceSize=256m
+
+# One Dockerfile for all nine services; the module is selected at build time.
+x-service-build: &service-build
+  context: .
+  dockerfile: infrastructure/docker/Dockerfile.service
+
+# ===============================================================================================
+# Services
+# ===============================================================================================
+
+services:
+
+  # -------------------------------------------------------------------------------------------
+  # Data stores
+  # -------------------------------------------------------------------------------------------
+
+  postgres:
+    image: postgres:16.15-alpine
+    container_name: fintech-postgres
+    restart: unless-stopped
+    networks: [fintech]
+    environment:
+      POSTGRES_USER: ${POSTGRES_SUPERUSER:?run ./scripts/bootstrap.sh to create .env}
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?run ./scripts/bootstrap.sh to create .env}
+      POSTGRES_DB: postgres
+      # Deterministic collation, so an ORDER BY does not change meaning when the host locale changes.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+      # The init script creates one role per service and needs the shared local password to set
+      # their passwords. This is the superuser container's own bootstrap secret, which is why it is
+      # declared here explicitly rather than inherited from the application service anchor.
+      SERVICE_DB_PASSWORD: ${SERVICE_DB_PASSWORD:?run ./scripts/bootstrap.sh to create .env}
+    # Every entry is a `postgres` command-line argument, so each setting needs its own `-c`.
+    # Omitting it produces `invalid argument: "log_min_duration_statement=500"` and a restart
+    # loop, which looks like an image problem rather than a syntax one.
+    command:
+      - postgres
+      # Log anything slower than this, so an accidental sequential scan shows up in the log rather
+      # than only in a slow-query report nobody reads.
+      - -c
+      - log_min_duration_statement=500
+      # Surface lock waits and deadlocks loudly. The payment path must not hide them.
+      - -c
+      - log_lock_waits=on
+      - -c
+      - deadlock_timeout=1s
+      # A statement that runs longer than this is a bug, and cancelling it frees a pool connection.
+      - -c
+      - statement_timeout=30s
+      # A transaction left open holds locks and blocks vacuum. Fail it rather than let it linger.
+      - -c
+      - idle_in_transaction_session_timeout=30s
+    ports:
+      - "127.0.0.1:${LOCAL_DB_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # Runs once, on an empty data directory. Creates one database and one role per service.
+      - ./infrastructure/docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # -U/-d must match the superuser created above. Checking a different database reports healthy
+      # before the init scripts have finished, which turns a provisioning race into a flaky startup.
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d postgres -q"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    logging: *default-logging
+    shm_size: 256mb
+
+  redis:
+    image: redis:8.6.7-alpine
+    container_name: fintech-redis
+    restart: unless-stopped
+    networks: [fintech]
+    command:
+      - redis-server
+      - --requirepass
+      - ${REDIS_PASSWORD:?run ./scripts/bootstrap.sh to create .env}
+      # Redis holds idempotency keys and fraud velocity windows. Both are worthless after a restart
+      # (the keys cache a Postgres constraint; the windows are seconds old), so persistence exists
+      # only so that a restart does not turn a brief blip into a flood of duplicate payments.
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --maxmemory
+      - 512mb
+      # volatile-lru: idempotency keys all carry a TTL, so evicting the least recently used one is
+      # safe. Evicting a key a client still needs would be worse than a cache miss, which is why
+      # allkeys-lru and noeviction are deliberately not used.
+      - --maxmemory-policy
+      - volatile-lru
+      - --save
+      - "60"
+      - "1000"
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    environment:
+      # Lets redis-cli authenticate in the health check without the password appearing in the
+      # process list or in `docker inspect` output.
+      REDISCLI_AUTH: ${REDIS_PASSWORD:?run ./scripts/bootstrap.sh to create .env}
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    logging: *default-logging
+
+  # -------------------------------------------------------------------------------------------
+  # Messaging
+  # -------------------------------------------------------------------------------------------
+
+  kafka:
+    image: apache/kafka:4.3.1
+    container_name: fintech-kafka
+    restart: unless-stopped
+    networks: [fintech]
+    environment:
+      CLUSTER_ID: ${KAFKA_CLUSTER_ID:-fint3ch-l0cal-Kr4ft-0neBr0ker}
+      KAFKA_NODE_ID: ${KAFKA_NODE_ID:-1}
+      # Combined broker + controller. ZooKeeper was removed in Kafka 4.x and the KRaft controller
+      # quorum replaced it, so one container can be the whole cluster.
+      KAFKA_PROCESS_ROLES: broker,controller
+      # Two advertised listeners because there are two kinds of client: containers on the compose
+      # network, and tools on the host. A single listener cannot be correct for both, because a
+      # container cannot resolve "localhost" to the broker.
+      #
+      # The host part of a listener is left empty on purpose: it binds every interface so the
+      # container is reachable, and the advertised listener below says how clients should reach it.
+      # Writing `INTERNAL://19092` instead of `INTERNAL://:19092` is missing the port separator and
+      # fails at startup with "Unable to parse INTERNAL://19092 to a broker endpoint".
+      KAFKA_LISTENERS: CONTROLLER://:9093,INTERNAL://:19092,EXTERNAL://:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:19092,EXTERNAL://localhost:${KAFKA_PORT:-9092}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      # Single broker, so every replication factor is 1. Production uses 3 across three
+      # availability zones. These 1s are a local-dev concession, recorded in docs/architecture.md
+      # so they are never mistaken for production values.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+      KAFKA_NUM_PARTITIONS: 6
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # Topics are provisioned explicitly by the kafka-init job. Implicit creation is convenient
+      # right up until a typo in a topic name silently creates a second, empty topic and a consumer
+      # waits forever for events that are being published somewhere else.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_LOG_SEGMENT_BYTES: 268435456
+      KAFKA_HEAP_OPTS: -Xms512m -Xmx1g
+    ports:
+      - "127.0.0.1:${KAFKA_PORT:-9092}:9092"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 30s
+    logging: *default-logging
+
+  # One-shot job: creates the topic catalogue, then exits. Topic names come from topics.txt so that
+  # infrastructure provisioning and the Java KafkaTopics constants cannot drift apart.
+  kafka-init:
+    image: apache/kafka:4.3.1
+    container_name: fintech-kafka-init
+    networks: [fintech]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      BOOTSTRAP_SERVER: kafka:19092
+      TOPIC_PARTITIONS: "6"
+      TOPIC_REPLICATION_FACTOR: "1"
+    volumes:
+      - ./infrastructure/kafka/topics.txt:/catalogue/topics.txt:ro
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -euo pipefail
+        created=0
+        while read -r topic; do
+          [ -z "$${topic}" ] && continue
+          case "$${topic}" in \#*) continue ;; esac
+          /opt/kafka/bin/kafka-topics.sh \
+            --bootstrap-server "$${BOOTSTRAP_SERVER}" \
+            --create \
+            --if-not-exists \
+            --topic "$${topic}" \
+            --partitions "$${TOPIC_PARTITIONS}" \
+            --replication-factor "$${TOPIC_REPLICATION_FACTOR}" \
+            --config cleanup.policy=delete \
+            --config retention.ms=604800000 >/dev/null
+          created=$$((created + 1))
+        done < /catalogue/topics.txt
+        echo "[kafka-init] ensured $${created} topics"
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server "$${BOOTSTRAP_SERVER}" --list
+    restart: "no"
+    logging: *default-logging
+
+  kafka-ui:
+    image: kafbat/kafka-ui:v1.5.0
+    container_name: fintech-kafka-ui
+    restart: unless-stopped
+    networks: [fintech]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_CLUSTERS_0_NAME: fintech-local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:19092
+      # Offset resets are a debugging action. Exposing them unauthenticated turns a read-only
+      # dashboard into a tool that can silently rewind a consumer and reprocess every event.
+      DYNAMIC_CONFIG_ENABLED: "false"
+      AUTH_TYPE: "DISABLED"
+    ports:
+      - "127.0.0.1:${KAFKA_UI_PORT:-8081}:8080"
+    logging: *default-logging
+
+  # -------------------------------------------------------------------------------------------
+  # Identity
+  # -------------------------------------------------------------------------------------------
+
+  keycloak:
+    image: keycloak/keycloak:26.7.4
+    container_name: fintech-keycloak
+    restart: unless-stopped
+    networks: [fintech]
+    # start-dev only. Production runs `start` behind TLS with a real hostname; see docs/security.md.
+    # The realm is imported from a file on every start rather than configured by hand: a realm
+    # created by clicking is not reproducible, and cannot be reviewed in a diff.
+    command: ["start-dev", "--import-realm"]
+    environment:
+      # Keycloak 26 renamed the bootstrap admin variables; the old KEYCLOAK_ADMIN_* names are ignored.
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USERNAME:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?run ./scripts/bootstrap.sh to create .env}
+      KC_HEALTH_ENABLED: "true"
+      KC_METRICS_ENABLED: "true"
+      KC_HTTP_ENABLED: "true"
+      KC_HTTP_PORT: 8180
+      KC_HTTP_MANAGEMENT_PORT: 9000
+      KC_HOSTNAME_STRICT: "true"
+      # Must match the issuer the tokens carry, and therefore the issuer the gateway validates.
+      # hostNetwork is not used, so the browser and curl use localhost while the gateway reaches the
+      # same realm over the compose network.
+      #
+      # strict=true is what makes the issuer deterministic. With strict=false Keycloak derives the
+      # frontend URL from each request's Host header, so the issuer in the token silently depended on
+      # whether the caller had typed 127.0.0.1 or localhost: two issuers for one realm, and a gateway
+      # configured against either one rejecting tokens minted through the other.
+      #
+      # This image still uses hostname v1 semantics, where strict=true requires KC_HOSTNAME. Setting
+      # only the deprecated KC_HOSTNAME_URL fails startup with "hostname is not configured". Host and
+      # port are one value here because v1 takes a single authority; the scheme comes from KC_HTTP_ENABLED.
+      KC_HOSTNAME: "http://localhost:8180"
+      KC_CACHE: local
+      JAVA_OPTS_APPEND: "-XX:MaxRAMPercentage=70.0"
+    ports:
+      - "127.0.0.1:8180:8180"
+    volumes:
+      - keycloak-data:/opt/keycloak/data
+      # Keycloak imports every *.json in this directory at startup and skips a realm that already
+      # exists, so this is idempotent across restarts.
+      - ./infrastructure/keycloak/realm:/opt/keycloak/data/import:ro
+    healthcheck:
+      # bash is invoked explicitly: this probe needs /dev/tcp, a bash feature, and the image's
+      # /bin/sh is not guaranteed to be bash on every base image revision.
+      test:
+        - CMD
+        - bash
+        - -c
+        - |
+          exec 3<>/dev/tcp/127.0.0.1/9000
+          printf 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3
+          cat <&3 | grep -q '"status": "UP"'
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    logging: *default-logging
+
+  # -------------------------------------------------------------------------------------------
+  # Observability
+  # -------------------------------------------------------------------------------------------
+
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    container_name: fintech-prometheus
+    restart: unless-stopped
+    networks: [fintech]
+    # Scrape interval lives in prometheus.yml (10s): short enough that the first graph of an
+    # incident is already useful, long enough that nine JVMs do not notice the scrape load.
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+    volumes:
+      - ./infrastructure/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infrastructure/prometheus/alerts:/etc/prometheus/alerts:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1:9090/-/healthy || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    logging: *default-logging
+
+  grafana:
+    image: grafana/grafana:13.0.9
+    container_name: fintech-grafana
+    restart: unless-stopped
+    networks: [fintech]
+    depends_on:
+      prometheus:
+        condition: service_started
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?run ./scripts/bootstrap.sh to create .env}
+      # Anonymous access off: a dashboard of transaction volumes is customer data.
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_SERVER_ROOT_URL: http://localhost:${GRAFANA_PORT:-3000}
+      GF_INSTALL_PLUGINS: ""
+    volumes:
+      - ./infrastructure/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infrastructure/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
+    logging: *default-logging
+
+  # -------------------------------------------------------------------------------------------
+  # Application services
+  #
+  # Declared explicitly rather than generated from a loop: `docker compose ps` and any static
+  # analysis of this file should be able to answer "what is deployed" without evaluating shell.
+  # -------------------------------------------------------------------------------------------
+
+  api-gateway:
+    <<: *service
+    image: fintech/api-gateway:local
+    build:
+      <<: *service-build
+      args:
+        MODULE: services/api-gateway
+        SERVICE_NAME: api-gateway
+    container_name: fintech-api-gateway
+    environment:
+      <<: *service-env
+      SERVER_PORT: "8080"
+      # The issuer is the value clients see in a token, and the JWK address is what this container
+      # can reach. The gateway runs on the compose network, where localhost is itself, so the two
+      # differ: a client on the host gets tokens whose issuer is localhost, and the gateway must
+      # validate that while fetching keys from the service name.
+      KEYCLOAK_ISSUER: ${KEYCLOAK_ISSUER:-http://localhost:8180/realms/fintech}
+      KEYCLOAK_JWK_SET_URI: http://keycloak:8180/realms/fintech/protocol/openid-connect/certs
+      KEYCLOAK_API_AUDIENCE: ${KEYCLOAK_API_AUDIENCE:-fintech-api}
+      # Where /api/v1/customers is forwarded. The service name, not the published port: the gateway
+      # is inside the Compose network, and 9082 is bound to the host's loopback only.
+      CUSTOMER_SERVICE_URL: http://customer-service:8082
+      # Where /api/v1/cards is forwarded, same reasoning: card-service publishes 9083 to the host's
+      # loopback only, so the gateway must use the service name and the internal port.
+      CARD_SERVICE_URL: http://card-service:8083
+      # Where /api/v1/transactions and /api/v1/accounts are forwarded, same reasoning again. The Idempotency-Key
+      # header both of those endpoints require is forwarded untouched: the gateway applies no default
+      # filters, so a retry that arrives through it reaches the service with the key the client sent.
+      TRANSACTION_SERVICE_URL: http://transaction-service:8084
+      # Where /api/v1/fraud/** is forwarded. Without this the route falls back to its localhost default,
+      # which resolves inside the gateway's own container and answers 500 with a connection-refused that
+      # names no service -- the failure looks like a fraud-service outage and is really a missing line
+      # here. Every other route above sets its URL for the same reason.
+      FRAUD_SERVICE_URL: http://fraud-service:8085
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      redis:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+      # Only started, not awaited on: no service in this file declares a healthcheck, so
+      # "service_healthy" here would fail to resolve and the gateway would never start. The
+      # gateway's own readiness probe is what actually gates traffic.
+      customer-service:
+        condition: service_started
+
+  auth-service:
+    <<: *service
+    image: fintech/auth-service:local
+    build:
+      <<: *service-build
+      args:
+        MODULE: services/auth-service
+        SERVICE_NAME: auth-service
+    container_name: fintech-auth-service
+    environment:
+      <<: *service-env
+      SERVER_PORT: "8081"
+      SERVICE_DB_URL: jdbc:postgresql://postgres:5432/fintech_auth
+      SERVICE_DB_PASSWORD: ${SERVICE_DB_PASSWORD:?run ./scripts/bootstrap.sh to create .env}
+      # Each service authenticates as its own role, so a compromise of one service cannot read
+      # another service's tables. The role is created by the Postgres init script.
+      SERVICE_DB_USERNAME: fintech_auth
+    ports:
+      - "127.0.0.1:9081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  customer-service:
+    <<: *service
+    image: fintech/customer-service:local
+    build:
+      <<: *service-build
+      args:
+        MODULE: services/customer-service
+        SERVICE_NAME: customer-service
+    container_name: fintech-customer-service
+    environment:
+      <<: *service-env
+      SERVER_PORT: "8082"
+      SERVICE_DB_URL: jdbc:postgresql://postgres:5432/fintech_customers
+      SERVICE_DB_PASSWORD: ${SERVICE_DB_PASSWORD:?run ./scripts/bootstrap.sh to create .env}
+      SERVICE_DB_USERNAME: fintech_customers
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+      # No default, unlike the settings shared by every service: without this key
+      # customer-service would have to invent one or store PII in the clear, and it
+      # chooses to fail at startup instead.
+      CUSTOMER_PII_MASTER_KEY: ${CUSTOMER_PII_MASTER_KEY:?run ./scripts/bootstrap.sh to create .env}
+    ports:
+      - "127.0.0.1:9082:8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+
+  card-service:
+    <<: *service
+    image: fintech/card-service:local
+    build:
+      <<: *service-build
+      args:
+        MODULE: services/card-service
+        SERVICE_NAME: card-service
+    container_name: fintech-card-service
+    environment:
+      <<: *service-env
+      SERVER_PORT: "8083"
+      SERVICE_DB_URL: jdbc:postgresql://postgres:5432/fintech_cards
+      SERVICE_DB_PASSWORD: ${SERVICE_DB_PASSWORD:?run ./scripts/bootstrap.sh to create .env}
+      SERVICE_DB_USERNAME: fintech_cards
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+      # No default, for the same reason customer-service has none: a default tokenisation key would
+      # make every token in the cards table reproducible by anyone who has read this repository, so
+      # "a database disclosure is not a card breach" would become "a database disclosure plus GitHub
+      # is a card breach". Failing to start is the correct response to a missing key.
+      CARD_TOKENISATION_KEY: ${CARD_TOKENISATION_KEY:?run ./scripts/bootstrap.sh to create .env}
+      # Where the eligibility check asks customer-service whether the cardholder is approved. The same
+      # variable the gateway uses to route to customer-service, because it is the same fact: this is
+      # where customer-service is. Without it the service would default to localhost, which inside a
+      # container is the container itself, and every issue would fail with a 503 that looks like
+      # customer-service being down.
+      CUSTOMER_SERVICE_URL: http://customer-service:8082
+    ports:
+      - "127.0.0.1:9083:8083"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      # Started, not awaited: no service in this file declares a healthcheck, so service_healthy here
+      # would fail to resolve and card-service would never start. The eligibility call fails closed
+      # with a 503 if customer-service is not up yet, which is the correct behaviour and is why this
+      # ordering does not need to be stricter.
+      customer-service:
+        condition: service_started
+
+  transaction-service:
+    <<: *service
+    image: fintech/transaction-service:local
+    build:
+      <<: *service-build
+      args:
+        MODULE: services/transaction-service
+        SERVICE_NAME: transaction-service
+    container_name: fintech-transaction-service
+    environment:
+      <<: *service-env
+      SERVER_PORT: "8084"
+      SERVICE_DB_URL: jdbc:postgresql://postgres:5432/fintech_transactions
+      SERVICE_DB_PASSWORD: ${SERVICE_DB_PASSWORD:?run ./scripts/bootstrap.sh to create .env}
+      SERVICE_DB_USERNAME: fintech_transactions
+      SUBJECT_DIGEST_KEY: ${SUBJECT_DIGEST_KEY:?run ./scripts/bootstrap.sh to create .env}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+    ports:
+      - "127.0.0.1:9084:8084"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+
+  fraud-service:
+    <<: *service
+    image: fintech/fraud-service:local
+    build:
+      <<: *service-build
+      args:
+        MODULE: services/fraud-service
+        SERVICE_NAME: fraud-service
+    container_name: fintech-fraud-service
+    environment:
+      <<: *service-env
+      SERVER_PORT: "8085"
+      SERVICE_DB_URL: jdbc:postgresql://postgres:5432/fintech_fraud
+      SERVICE_DB_PASSWORD: ${SERVICE_DB_PASSWORD:?run ./scripts/bootstrap.sh to create .env}
+      SERVICE_DB_USERNAME: fintech_fraud
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+      # The same key transaction-service holds, and it has to be the same key: these two services are
+      # the only ones that see a subject digest, and FraudDigestKey refuses to start without it, so a
+      # missing value here is a boot failure rather than a silent run under no key at all. Sharing one
+      # key is what makes a digest joinable across the two databases, and it is also the reason neither
+      # database is the place to store a subject index — see ADR-0008.
+      SUBJECT_DIGEST_KEY: ${SUBJECT_DIGEST_KEY:?run ./scripts/bootstrap.sh to create .env}
+    ports:
+      - "127.0.0.1:9085:8085"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+
+  notification-service:
+    <<: *service
+    image: fintech/notification-service:local
+    build:
+      <<: *service-build
+      args:
+        MODULE: services/notification-service
+        SERVICE_NAME: notification-service
+    container_name: fintech-notification-service
+    environment:
+      <<: *service-env
+      SERVER_PORT: "8086"
+      SERVICE_DB_URL: jdbc:postgresql://postgres:5432/fintech_notifications
+      SERVICE_DB_PASSWORD: ${SERVICE_DB_PASSWORD:?run ./scripts/bootstrap.sh to create .env}
+      SERVICE_DB_USERNAME: fintech_notifications
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+    ports:
+      - "127.0.0.1:9086:8086"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+
+  audit-service:
+    <<: *service
+    image: fintech/audit-service:local
+    build:
+      <<: *service-build
+      args:
+        MODULE: services/audit-service
+        SERVICE_NAME: audit-service
+    container_name: fintech-audit-service
+    environment:
+      <<: *service-env
+      SERVER_PORT: "8087"
+      SERVICE_DB_URL: jdbc:postgresql://postgres:5432/fintech_audit
+      SERVICE_DB_PASSWORD: ${SERVICE_DB_PASSWORD:?run ./scripts/bootstrap.sh to create .env}
+      SERVICE_DB_USERNAME: fintech_audit
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+    ports:
+      - "127.0.0.1:9087:8087"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+
+  dispute-service:
+    <<: *service
+    image: fintech/dispute-service:local
+    build:
+      <<: *service-build
+      args:
+        MODULE: services/dispute-service
+        SERVICE_NAME: dispute-service
+    container_name: fintech-dispute-service
+    environment:
+      <<: *service-env
+      SERVER_PORT: "8088"
+      SERVICE_DB_URL: jdbc:postgresql://postgres:5432/fintech_disputes
+      SERVICE_DB_PASSWORD: ${SERVICE_DB_PASSWORD:?run ./scripts/bootstrap.sh to create .env}
+      SERVICE_DB_USERNAME: fintech_disputes
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+    ports:
+      - "127.0.0.1:9088:8088"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+
+# ===============================================================================================
+# Networks and volumes
+# ===============================================================================================
+
+networks:
+  fintech:
+    name: fintech
+    driver: bridge
+
+volumes:
+  postgres-data:
+  redis-data:
+  kafka-data:
+  keycloak-data:
+  prometheus-data:
+  grafana-data:

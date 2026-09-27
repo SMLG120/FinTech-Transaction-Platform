@@ -1,0 +1,176 @@
+# Alerting rules for the local platform.
+#
+# Every rule here is derived from a payment platform's actual failure modes rather than from
+# generic CPU/memory templates. A rule that fires on a condition nobody would act on is noise, and
+# noise is what causes Alertmanager to be muted.
+#
+# Thresholds are development values and are too tight to page anyone. Production thresholds belong
+# in the SLO work of the observability phase, where they follow from measured latency and error
+# budgets instead of from guesses made before a single request has been served.
+
+groups:
+  # ---------------------------------------------------------------------------
+  # Availability: a service that is not answering is the only class of problem
+  # that is unambiguously an incident.
+  # ---------------------------------------------------------------------------
+  - name: availability
+    rules:
+      - alert: ServiceDown
+        expr: up{job="platform-services"} == 0
+        # 2m rather than the default 1m: a JVM restart during a local rebuild is not an incident,
+        # and an alert that fires on every `docker compose up --build` gets ignored within a week.
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.service }} has been unreachable for 2 minutes"
+          description: "Prometheus cannot scrape {{ $labels.service }}. Check `docker compose logs {{ $labels.service }}`."
+
+      - alert: ServiceMissing
+        # Protects against the specific failure where a service is removed from the application but
+        # left in this file: the target is then permanently unreachable and the error is invisible.
+        expr: absent(up{job="platform-services"})
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No platform service is being scraped at all"
+          description: "Every target in the platform-services job is gone. Prometheus is probably misconfigured or down."
+
+  # ---------------------------------------------------------------------------
+  # Correctness: the transaction path must not report success while failing.
+  # ---------------------------------------------------------------------------
+  - name: transaction_correctness
+    rules:
+      - alert: ElevatedServerErrors
+        expr: |
+          sum by (service) (
+            rate(http_server_requests_seconds_count{job="platform-services", status=~"5.."}[5m])
+          )
+          /
+          sum by (service) (
+            rate(http_server_requests_seconds_count{job="platform-services"}[5m])
+          )
+          > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.service }} is returning 5xx on more than 5% of requests"
+          description: "A payment API that errors on 5% of requests is failing customers. Check the error contract in the logs, keyed by correlation id."
+
+      - alert: NoRequestsReachingService
+        # A service with no traffic at all is either correct (nothing has called it yet) or broken
+        # (the gateway is not routing to it). Without this rule the two cases look identical.
+        expr: |
+          sum by (service) (rate(http_server_requests_seconds_count{job="platform-services"}[15m])) == 0
+        for: 30m
+        labels:
+          severity: info
+        annotations:
+          summary: "{{ $labels.service }} has served no requests for 30 minutes"
+          description: "Expected for a service with no routes configured yet. Once routes exist, this means the gateway is not reaching it."
+
+  # ---------------------------------------------------------------------------
+  # Saturation: the JVM runs out of heap or GC time before it runs out of CPU.
+  # ---------------------------------------------------------------------------
+  - name: saturation
+    rules:
+      - alert: HeapPressure
+        # 85% of the max the JVM reports. The service is not yet failing, but the next allocation
+        # cliff is close and a restart would be visible to customers.
+        expr: |
+          sum by (service) (jvm_memory_used_bytes{area="heap", id="G1 Old Gen"})
+          /
+          sum by (service) (jvm_memory_max_bytes{area="heap", id="G1 Old Gen"})
+          > 0.85
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.service }} is using more than 85% of its heap"
+          description: "Sustained heap growth points at a leak rather than at load. Capture a heap dump before restarting, or the evidence is lost."
+
+      - alert: GarbageCollectionOverhead
+        expr: |
+          sum by (service) (rate(jvm_gc_pause_seconds_sum{job="platform-services"}[5m]))
+          >
+          0.2 * sum by (service) (rate(jvm_gc_pause_seconds_count{job="platform-services"}[5m]))
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.service }} is spending over 20% of its time pausing for GC"
+          description: "Allocation rate exceeds what the collector can reclaim. A payment service that pauses this often will breach its latency budget."
+
+      - alert: ThreadPoolExhaustion
+        # Tomcat's worker threads, for the eight servlet services. The gateway is reactive and
+        # reports virtual threads instead, so it legitimately has no such series and never fires.
+        expr: tomcat_threads_busy_threads{job="platform-services"} / tomcat_threads_config_max_threads{job="platform-services"} > 0.9
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.service }} is using over 90% of its request threads"
+          description: "New requests will queue behind existing ones. Usually a slow downstream call, not a lack of threads."
+
+      - alert: ConnectionPoolExhaustion
+        expr: hikaricp_connections_pending{job="platform-services"} > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.service }} has requests waiting for a database connection"
+          description: "The pool is the bottleneck. Check for a slow query or a transaction holding locks longer than statement_timeout."
+
+  # ---------------------------------------------------------------------------
+  # Event streaming: a consumer that stops consuming is silent, which is the
+  # most dangerous failure mode in an event-driven system.
+  # ---------------------------------------------------------------------------
+  - name: event_streaming
+    rules:
+      - alert: NoKafkaEventsConsumed
+        expr: |
+          sum by (service, topic) (rate(kafka_consumer_fetch_manager_records_consumed_total{job="platform-services"}[15m])) == 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.service }} consumed nothing from {{ $labels.topic }} for 30 minutes"
+          description: "Either the producer stopped or the consumer group lost its assignment. Check the rebalance log before assuming the producer is at fault."
+
+      - alert: ConsumerLagGrowing
+        # No absolute threshold: consumer lag is meaningless without knowing the rate of events, and
+        # a fixed number would be trivially wrong for both a quiet and a busy topic.
+        expr: |
+          deriv(kafka_consumer_fetch_manager_records_lag_max{job="platform-services"}[10m]) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Consumer lag on {{ $labels.topic }} is still growing after 15 minutes"
+          description: "The consumer is not keeping up and will not recover on its own. Adding partitions only helps if the key distribution leaves partitions idle."
+
+  # ---------------------------------------------------------------------------
+  # Resource exhaustion that a restart cannot fix.
+  # ---------------------------------------------------------------------------
+  - name: infrastructure
+    rules:
+      - alert: ContainerRestarting
+        expr: changes(process_start_time_seconds{job="platform-services"}[15m]) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.service }} has restarted more than twice in 15 minutes"
+          description: "A crash loop. The cause is in the previous container's logs, which the restart has already discarded."
+
+      - alert: FilesystemFillingUp
+        expr: |
+          predict_linear(node_filesystem_avail_bytes{mountpoint="/prometheus"}[6h], 4 * 3600) < 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Prometheus storage is predicted to fill within 4 hours"
+          description: "At a 15 day retention, an unnoticed growth in series cardinality shows up here rather than as a failed write."

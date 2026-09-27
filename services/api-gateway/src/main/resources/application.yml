@@ -1,0 +1,171 @@
+# api-gateway
+# Every value that differs between environments is supplied by the environment, never by a
+# checked-in file. No secret has a default here on purpose: a missing variable must fail
+# loudly at startup rather than silently connecting with a known password.
+spring:
+  application:
+    name: api-gateway
+  threads:
+    virtual:
+      enabled: true
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 2s
+      lettuce:
+        pool:
+          max-active: 16
+          max-idle: 8
+          min-idle: 2
+  cloud:
+    gateway:
+      # Routes are declared per service, explicitly, rather than discovered from the registry.
+      # A discovery locator routes whatever happens to be running, which means a service that was
+      # deployed by mistake becomes publicly reachable the moment it registers. Naming each
+      # destination keeps the reachable surface readable in one place and reviewed as code.
+      #
+      # The path is /api/v1/customers, which falls under the authenticated /api/** rule in
+      # GatewaySecurityConfiguration. Coarse role gates belong to the gateway; whether a caller owns
+      # a particular profile is the service's question, and answering it here would mean a second,
+      # inconsistent implementation of the same rule.
+      routes:
+        - id: customer-service
+          uri: ${CUSTOMER_SERVICE_URL:http://localhost:8082}
+          predicates:
+            - Path=/api/v1/customers/**
+
+        # Phase 4. Same reasoning as the customer route above, and the ownership rules are narrower
+        # still: card-service resolves the cardholder itself and the gateway has no idea whose card a
+        # card id names, because the id is in the path and the owner is a row card-service has to look
+        # up.
+        - id: card-service
+          uri: ${CARD_SERVICE_URL:http://localhost:8083}
+          predicates:
+            - Path=/api/v1/cards/**
+
+        # Phase 5. Same reasoning again, and the ownership question is sharper here than anywhere
+        # else: the gateway cannot know whose money a transaction touches or whether they hold enough
+        # of it. Both are rows transaction-service looks up, under a subject digest derived from the
+        # signed identity. So the gateway forwards and nothing more.
+        #
+        # One route for the collection and the item, because trailing `**` matches zero segments and
+        # so covers POST /api/v1/transactions as well as POST /api/v1/transactions/{id}/settle.
+        - id: transaction-service
+          uri: ${TRANSACTION_SERVICE_URL:http://localhost:8084}
+          predicates:
+            - Path=/api/v1/transactions/**
+
+        # Balances and top-ups. Funded rather than left out on the assumption that a client would find
+        # another way to add money: a payment platform that cannot be funded over the API is either
+        # useless or one whose operators top up accounts by hand, and the second is worse.
+        #
+        # A top-up is idempotency-keyed for the same reason a payment is. It moves money, and a
+        # double top-up is as wrong as a double charge. The header reaches the service untouched
+        # because no default filter strips it.
+        - id: transaction-accounts
+          uri: ${TRANSACTION_SERVICE_URL:http://localhost:8084}
+          predicates:
+            - Path=/api/v1/accounts/**
+
+        # Phase 6. Staff-only, and the reason it needs no role predicate here is that the service
+        # enforces it: FraudAuthorization knows the difference between a role that may read a decision
+        # and a role that may change one, which a gateway path predicate cannot express. Naming the
+        # roles here as well would be a second list to keep in step with the service's, and the two
+        # would disagree the first time somebody added a role.
+        #
+        # No customer route to any of this. There is no /api/v1/fraud/** path that a customer's token can
+        # use, and that is the property — a customer who can be told the score learns the threshold.
+        - id: fraud-service
+          uri: ${FRAUD_SERVICE_URL:http://localhost:8085}
+          predicates:
+            - Path=/api/v1/fraud/**
+
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+  error:
+    # Never render a stack trace into a response body; the correlation id is the contract.
+    include-stacktrace: never
+    include-message: never
+    include-binding-errors: never
+  forward-headers-strategy: framework
+  max-http-request-header-size: 16KB
+  # No server.tomcat.* block: this is a reactive gateway on Netty, and Tomcat settings here would
+  # be silently ignored while reading as if the servlet connector were configured.
+
+management:
+  endpoints:
+    web:
+      exposure:
+        # Health and Prometheus are the only endpoints reachable without a token, and
+        # they are network-restricted in addition (see infrastructure/kubernetes).
+        # env, configprops, heapdump and loggers expose secrets or internals and stay closed.
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: when-authorized
+      show-components: when-authorized
+    prometheus:
+      access: read_only
+  metrics:
+    tags:
+      # environment and version are added automatically by ObservabilityAutoConfiguration.
+      application: ${spring.application.name}
+    distribution:
+      # Bucket boundaries chosen around the latency budget of a payment authorisation.
+      # Buckets that do not straddle the p95 hide exactly the regressions worth alerting on.
+      percentiles-histogram.http.server.requests: true
+      slo:
+        http.server.requests: 50ms,100ms,200ms,500ms,1s,2s
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+  info:
+    env:
+      enabled: false
+  tracing:
+    enabled: false
+
+logging:
+  level:
+    root: INFO
+    com.fintech.platform: ${LOG_LEVEL_PLATFORM:INFO}
+    org.springframework.kafka: ${LOG_LEVEL_KAFKA:WARN}
+    org.apache.kafka: ${LOG_LEVEL_KAFKA_CLIENT:WARN}
+    org.hibernate.SQL: ${LOG_LEVEL_SQL:WARN}
+  structured:
+    # ECS JSON so log aggregation can index fields instead of grepping strings.
+    format:
+      console: ${LOG_FORMAT:ecs}
+
+app:
+  environment: ${APP_ENVIRONMENT:local}
+  version: ${APP_VERSION:0.1.0-SNAPSHOT}
+
+
+# -------------------------------------------------------------------------------------------
+# Phase 2: identity
+# -------------------------------------------------------------------------------------------
+# The issuer is what a client's token actually says, and it is the value the gateway demands to see.
+# The JWKS address is where this container can reach Keycloak. They are different hosts in Compose and
+# setting only issuer-uri would make the gateway try to fetch keys from a name that does not resolve
+# inside the network, failing at startup rather than at the first request.
+platform:
+  keycloak:
+    issuer: ${KEYCLOAK_ISSUER:http://localhost:8180/realms/fintech}
+    jwk-set-uri: ${KEYCLOAK_JWK_SET_URI:http://localhost:8180/realms/fintech/protocol/openid-connect/certs}
+    # A token minted for any other client in this realm must not be accepted here, so the audience
+    # is checked rather than inferred from the issuer.
+    audience: ${KEYCLOAK_API_AUDIENCE:fintech-api}
+  security:
+    internal-identity:
+      # Hex-encoded HMAC-SHA256 key shared with every downstream service. No default: a service that
+      # starts without one must fail loudly rather than trust unsigned headers. bootstrap.sh writes
+      # a fresh 32-byte value into .env.
+      signing-key: ${INTERNAL_IDENTITY_SIGNING_KEY:}

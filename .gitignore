@@ -1,0 +1,58 @@
+# ---------------------------------------------------------------- secrets
+# The single most important entry in this file. .env holds generated database,
+# Keycloak and Grafana credentials.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.jks
+**/secrets/**
+!**/secrets/*.example.yaml
+
+# ---------------------------------------------------------------- build output
+target/
+build/
+out/
+*.class
+*.jar
+*.war
+!.mvn/wrapper/maven-wrapper.jar
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# Maven / Gradle
+.mvn/timing.properties
+.flattened-pom.xml
+
+# ---------------------------------------------------------------- IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json.example
+*.swp
+*.swo
+*~
+.DS_Store
+.AppleDouble
+
+# ---------------------------------------------------------------- test + coverage output
+/site/
+/jacoco/
+coverage/
+*.log
+surefire-reports/
+failsafe-reports/
+/testcontainers/
+
+# ---------------------------------------------------------------- observability local state
+prometheus/data/
+grafana/data/
+*.tsdb
+*.db

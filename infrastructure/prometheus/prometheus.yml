@@ -1,0 +1,70 @@
+# Prometheus scrape and alert configuration for local development.
+#
+# Two deliberate choices worth understanding before editing:
+#
+# 1. Service discovery is a static list. The compose file pins exact service names, ports and the
+#    `environment` label, so a static list is verifiable by reading the file. Native service
+#    discovery needs a working Docker socket inside the Prometheus container, which is a privilege
+#    escalation for a development tool. Phase 15 replaces this with Kubernetes SD.
+#
+# 2. The `environment` label is attached by a relabelling rule rather than by each service
+#    configuring it, so that adding a service to this file cannot forget the label and produce a
+#    metric that no cross-service query can filter on.
+
+global:
+  # 10s: short enough that the first graph of an incident is already useful, long enough that ten
+  # JVMs do not notice the scrape cost. The evaluation interval matches it, so a dashboard is never
+  # interpolating between points that are older than the interval.
+  scrape_interval: 10s
+  scrape_timeout: 5s
+  evaluation_interval: 10s
+  external_labels:
+    platform: secure-fintech-transaction-platform
+    monitor: local-compose
+
+rule_files:
+  - /etc/prometheus/alerts/*.yml
+
+scrape_configs:
+  # Prometheus scraping itself: the standard way to notice that monitoring has stopped without
+  # relying on a separate external check that nobody is watching.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # Every application service. Ports are the container ports; the 9xxx host ports in compose are
+  # irrelevant here because Prometheus talks to the service directly on the compose network.
+  - job_name: platform-services
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["api-gateway:8080"]
+        labels: {service: api-gateway, component: edge}
+      - targets: ["auth-service:8081"]
+        labels: {service: auth-service, component: platform}
+      - targets: ["customer-service:8082"]
+        labels: {service: customer-service, component: platform}
+      - targets: ["card-service:8083"]
+        labels: {service: card-service, component: platform}
+      - targets: ["transaction-service:8084"]
+        labels: {service: transaction-service, component: platform}
+      - targets: ["fraud-service:8085"]
+        labels: {service: fraud-service, component: platform}
+      - targets: ["notification-service:8086"]
+        labels: {service: notification-service, component: platform}
+      - targets: ["audit-service:8087"]
+        labels: {service: audit-service, component: platform}
+      - targets: ["dispute-service:8088"]
+        labels: {service: dispute-service, component: platform}
+    relabel_configs:
+      # The gateway and the services label themselves `application`; keep that and add the
+      # deployment-wide labels every dashboard groups by.
+      - source_labels: [environment]
+        target_label: environment
+      - source_labels: [version]
+        target_label: version
+
+  # Postgres and Redis exporters are deliberately NOT declared yet. There are no exporter
+  # containers in the compose file, so declaring the jobs would create two targets that are
+  # permanently down, and a permanently firing alert is worse than an absent one because it
+  # teaches everyone to ignore down targets. They are added in the observability phase, together
+  # with the dashboards that read them.
