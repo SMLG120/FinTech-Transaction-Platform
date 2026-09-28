@@ -1,0 +1,14 @@
+{
+  "id": "22222222-3333-4444-5555-666666666666",
+  "amount": "25.00",
+  "currency": "GBP",
+  "status": "SETTLED",
+  "cardLastFour": "9f3d",
+  "payeeName": "Acme Books",
+  "payeeReference": "web-a1b2c3d4",
+  "declineReason": null,
+  "createdAt": "2026-09-20T10:00:00Z",
+  "authorizedAt": "2026-09-20T10:00:00Z",
+  "settledAt": "2026-09-20T10:01:00Z",
+  "reversedAt": null
+}

@@ -1,0 +1,187 @@
+# Default values for the fintech chart. Production overrides live outside this
+# repository: no committed file here carries a usable credential, and every
+# secret below is empty until supplied with -f or --set. Rendering with
+# empty secrets fails loudly naming the missing value — the same fail-loud
+# rule as the Compose `${VAR:?...}` interpolation.
+
+global:
+  # Image prefix and tag. Local images are fintech/<service>:local; production
+  # uses immutable, content-addressed tags promoted unchanged between envs.
+  imageRegistry: ""
+  imageTag: "local"
+  imagePullPolicy: IfNotPresent
+  environment: local
+  version: 0.1.0-SNAPSHOT
+  # The interim shared HMAC key (ADR-0004). One value for the gateway and all
+  # services, exactly like Compose — and exactly as temporary: Phase 15 ends
+  # with per-service certificates (ADR-0016), at which point this disappears.
+  identitySigningKey: ""
+  kafkaBootstrapServers: "kafka:9092"
+  redisHost: redis
+  redisPort: "6379"
+  redisPassword: ""
+  # JVM sized as a percentage of the container (see resources below), so the
+  # same image is correct on a laptop and on a node. Metaspace capped
+  # separately: MaxRAMPercentage does not cover it.
+  javaToolOptions: "-XX:MaxRAMPercentage=70.0 -XX:MaxMetaspaceSize=256m"
+
+networkPolicy:
+  enabled: true
+  # Namespace Prometheus scrapes from. The label `name: monitoring` must exist
+  # on it; without the label the scrape rule matches nothing and metrics go
+  # dark rather than insecure — failing closed in the observable direction.
+  monitoringNamespace: monitoring
+
+# Private PKI for service identity (mTLS). Disabled by default: cert-manager
+# CRDs are unknown to client-side validation, so enabling it removes the
+# render from the cluster-free gate. Render for review with
+# `--set pki.enabled=true`; apply with --dry-run=server on a real cluster.
+# The issuer below is self-signed for development. Production replaces it
+# with a real CA and short-lived certificates (see ADR-0016).
+pki:
+  enabled: false
+  issuerName: fintech-dev-ca
+  # 90-day certificates, renewed from 15 days out. Short enough that a
+  # compromised key has a bounded life; long enough that renewal storms do
+  # not page anyone.
+  durationHours: 2160
+  renewBeforeHours: 360
+
+# One entry per service. `database: null` means the service owns no database
+# (the gateway); `redis: false` means it holds no cached state (settlement).
+# Secrets are per service — the shared local Compose password has no
+# counterpart here (see docs/deployment.md).
+services:
+  api-gateway:
+    port: 8080
+    database: null
+    redis: true
+    kafka: false
+    keycloakIssuer: "https://idp.example.test/realms/fintech"
+    keycloakJwkSetUri: "https://idp.example.test/realms/fintech/protocol/openid-connect/certs"
+    keycloakAudience: "fintech-api"
+    corsAllowedOrigins: "https://app.example.test"
+    rateLimitReplenishPerSecond: "100"
+    rateLimitBurst: "200"
+    serviceUrls:
+      CUSTOMER_SERVICE_URL: "http://fintech-customer-service:8082"
+      CARD_SERVICE_URL: "http://fintech-card-service:8083"
+      TRANSACTION_SERVICE_URL: "http://fintech-transaction-service:8084"
+      FRAUD_SERVICE_URL: "http://fintech-fraud-service:8085"
+      SETTLEMENT_SERVICE_URL: "http://fintech-settlement-service:8089"
+      NOTIFICATION_SERVICE_URL: "http://fintech-notification-service:8086"
+      AUDIT_SERVICE_URL: "http://fintech-audit-service:8087"
+      DISPUTE_SERVICE_URL: "http://fintech-dispute-service:8088"
+    secrets:
+      # No database password: the gateway owns no tables.
+  auth-service:
+    ingressFrom:
+      - api-gateway
+    port: 8081
+    database:
+      url: "jdbc:postgresql://postgres:5432/fintech_auth"
+      username: fintech_auth
+    redis: true
+    kafka: false
+    secrets:
+      SERVICE_DB_PASSWORD: ""
+  customer-service:
+    ingressFrom:
+      - api-gateway
+      - card-service
+    port: 8082
+    database:
+      url: "jdbc:postgresql://postgres:5432/fintech_customers"
+      username: fintech_customers
+    redis: true
+    kafka: true
+    secrets:
+      SERVICE_DB_PASSWORD: ""
+      CUSTOMER_PII_MASTER_KEY: ""
+  card-service:
+    ingressFrom:
+      - api-gateway
+    port: 8083
+    database:
+      url: "jdbc:postgresql://postgres:5432/fintech_cards"
+      username: fintech_cards
+    redis: true
+    kafka: true
+    customerServiceUrl: "http://fintech-customer-service:8082"
+    secrets:
+      SERVICE_DB_PASSWORD: ""
+      CARD_TOKENISATION_KEY: ""
+  transaction-service:
+    ingressFrom:
+      - api-gateway
+      - dispute-service
+    port: 8084
+    database:
+      url: "jdbc:postgresql://postgres:5432/fintech_transactions"
+      username: fintech_transactions
+    redis: true
+    kafka: true
+    secrets:
+      SERVICE_DB_PASSWORD: ""
+      SUBJECT_DIGEST_KEY: ""
+  fraud-service:
+    ingressFrom:
+      - api-gateway
+    port: 8085
+    database:
+      url: "jdbc:postgresql://postgres:5432/fintech_fraud"
+      username: fintech_fraud
+    redis: true
+    kafka: true
+    secrets:
+      SERVICE_DB_PASSWORD: ""
+      SUBJECT_DIGEST_KEY: ""
+  notification-service:
+    ingressFrom:
+      - api-gateway
+    port: 8086
+    database:
+      url: "jdbc:postgresql://postgres:5432/fintech_notifications"
+      username: fintech_notifications
+    redis: true
+    kafka: true
+    secrets:
+      SERVICE_DB_PASSWORD: ""
+  audit-service:
+    ingressFrom:
+      - api-gateway
+    port: 8087
+    database:
+      url: "jdbc:postgresql://postgres:5432/fintech_audit"
+      username: fintech_audit
+    redis: true
+    kafka: true
+    secrets:
+      SERVICE_DB_PASSWORD: ""
+  dispute-service:
+    ingressFrom:
+      - api-gateway
+    port: 8088
+    database:
+      url: "jdbc:postgresql://postgres:5432/fintech_disputes"
+      username: fintech_disputes
+    redis: true
+    kafka: true
+    transactionServiceUrl: "http://fintech-transaction-service:8084"
+    secrets:
+      SERVICE_DB_PASSWORD: ""
+  settlement-service:
+    ingressFrom:
+      - api-gateway
+    port: 8089
+    # No REDIS_HOST here, on the same reasoning as Compose: this service holds
+    # no cached features or counters, because a settlement cycle's contents are
+    # the rows and the rows are the truth. Depending on a cache it does not use
+    # would let a redis outage stop settlement for no reason.
+    database:
+      url: "jdbc:postgresql://postgres:5432/fintech_settlement"
+      username: fintech_settlement
+    redis: false
+    kafka: true
+    secrets:
+      SERVICE_DB_PASSWORD: ""

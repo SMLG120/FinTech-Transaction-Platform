@@ -7,7 +7,10 @@ skeletons, local infrastructure, observability wiring and build pipeline are in 
 platform now carries a payment from authorisation through fraud scoring to a period statement that is
 reconciled against a bank figure and cannot be edited once it has been given out — tells the
 customer and the operator about each step, records who did what in a trail nobody can edit, takes
-money back when a chargeback case says so, and shows a customer all of it in a browser. What is not
+money back when a chargeback case says so, and shows it all in a browser: the static customer UI
+in `web/` plus a React + TypeScript dashboard in `frontend/fintech-dashboard/` covering every
+role. **Phase 12 (contract and integration testing) is in progress**; see the phase list below
+for what is established and what is rollout. What is not
 built
 yet is stated in the phase list below rather than left to be discovered.
 
@@ -41,7 +44,7 @@ make ps
 | Keycloak | http://localhost:8180 |
 | Prometheus | http://localhost:9090 |
 | Grafana | http://localhost:3000 |
-| Individual services | http://localhost:9081–9088 |
+| Individual services | http://localhost:9081–9089 |
 
 Credentials for Keycloak, Grafana, Kafka UI and Postgres are the randomly generated values in
 `.env`. That file is gitignored and readable only by you.
@@ -50,7 +53,7 @@ Stop the stack with `make down`. `make clean-all` also deletes the database volu
 
 ### Calling the API as a local user
 
-Phase 2 gave the gateway real authentication, so there is a token to get. The realm ships five
+Phase 2 gave the gateway real authentication, so there is a token to get. The realm ships seven
 synthetic users, one per role:
 
 ```bash
@@ -344,6 +347,11 @@ calls move money, and that the served files carry no secrets. The password grant
 to local development — production moves to Authorization Code with PKCE in a single `login`
 method. Design in [ADR-0013](docs/decisions/0013-static-customer-ui.md).
 
+For staff views and the full dashboard, `frontend/fintech-dashboard/` is a React + TypeScript
+application covering every role (analyst queue, audit trail, settlement, notifications) against
+the same gateway APIs — see its README. The static UI above remains the customer surface the
+verify script checks.
+
 ### How a request is authenticated
 
 ```
@@ -383,6 +391,7 @@ pom.xml                      Maven reactor, dependency and plugin management
 platform/
   platform-common/           Transport-agnostic contracts: errors, events, pagination, metrics tags
   platform-common-web/       Servlet cross-cutting web behaviour: correlation id, error responses
+contracts/                 Shared wire-contract fixtures (HTTP + events), consumed on both sides
 services/
   api-gateway/               Reactive ingress (Netty). Routes, JWT verification, rate limiting
   auth-service/              Keycloak-backed authentication and token issuance
@@ -398,11 +407,17 @@ infrastructure/
   kafka/                     Topic catalogue (single source of truth)
   prometheus/                Scrape config and alert rules
   grafana/                   Provisioned datasource and dashboards
+  helm/fintech/              Kubernetes chart: services, secrets, network policies, PKI
   sample-data/               Synthetic fixtures, loaded only when asked
+frontend/
+  fintech-dashboard/         React + TypeScript dashboard for all roles (see its README)
 docs/
   architecture.md            Why the system is shaped this way
   security.md                Threat model and the controls that answer it
   deployment.md              What changes between this compose file and production
+  performance.md             Measured baseline, knobs, bottlenecks, and what local numbers do not prove
+  slo.md                     The two objectives and their burn-rate alerts
+  runbooks/                  Incident procedures with copy-paste triage
   decisions/                 Architecture decision records
 scripts/
   bootstrap.sh               Generates .env with random secrets
@@ -416,6 +431,9 @@ scripts/
   verify-audit-lifecycle.sh  Asserts the trail row, its access rules, and its immutability, end to end
   verify-dispute-lifecycle.sh  Asserts the case, the refund through the ledger, and the trail, end to end
   verify-frontend-lifecycle.sh  Asserts the served UI, the preflight, and the UI's calls, end to end
+  chaos-degraded-lifecycle.sh  Stops customer-service and kafka in turn; asserts fast fail-closed refusals, authorisation without a broker, and recovery
+  load-smoke.sh  Drives a bounded burst of payments; asserts latency bound, zero errors, exact money and a balanced ledger
+  backup-postgres.sh  Dumps every service database; restores with --restore (databases must be empty)
   wait-for-http.sh           Polls an endpoint until it answers
 ```
 
@@ -470,12 +488,34 @@ and a service cannot read another service's tables even if it is fully compromis
 
 ```bash
 make test          # unit tests only, no Docker needed
+make contract      # wire-contract tests: OpenAPI specs, shared fixtures, event envelopes
 make verify        # compile, test, and write the coverage report
 make quality       # verify, plus assert formatting
 make check         # what a change must pass before it is proposed
 make coverage      # coverage summary per module
 make format        # reformat sources
 ```
+
+Against a running stack (`make up` first — these are live checks, not part
+of `make check`):
+
+```bash
+make verify-live   # all lifecycle checks end to end, chaos degraded-mode last
+make load-smoke    # bounded payment burst: latency bound, zero errors, exact ledger
+make helm-template # lint, render and schema-validate the Kubernetes chart (no cluster needed)
+```
+
+`make contract` checks the agreements between services rather than the
+services themselves: each contracted service serves an OpenAPI document with
+its paths and DTO property names pinned, the synchronous calls
+(card→customer, dispute→transaction) share one JSON fixture consumed on
+both sides (producer DTO test plus stub-server adapter test), one Kafka
+event pair is serialised by the producer type and parsed by the real
+consumer types, and the React dashboard parses the same fixtures with Zod.
+A renamed field breaks the producer side first. See
+[ADR-0014](docs/decisions/0014-wire-contracts-without-a-broker.md) and
+[contracts/README.md](contracts/README.md). Docker daemon required for the
+container-backed tests, no compose stack.
 
 `make check` is the gate. It runs `quality` and then `check-secrets`, which renders the compose file
 and asserts that no application container is given the Postgres superuser password, the Keycloak
@@ -538,18 +578,21 @@ Things that are deliberately *not* what production looks like, so nobody mistake
 | 8 | Notifications | **done** |
 | 9 | Audit trail and regulatory reporting | **done** |
 | 10 | Disputes and chargebacks | **done** |
-| 11 | Web frontend | **done** |
-| 12 | Contract and integration testing | |
-| 13 | Resilience: circuit breakers, retries, chaos | |
-| 14 | Performance and load testing | |
-| 15 | Kubernetes, Helm, network policy, secrets | |
-| 16 | Production hardening, runbooks, SLOs | |
+| 11 | Web frontend | **done** — static customer UI (`web/`) plus React + TypeScript dashboard for all roles (`frontend/fintech-dashboard/`) |
+| 12 | Contract and integration testing | **done** — OpenAPI contracts on all six servlet services, shared fixtures (both sync calls, one event pair, dashboard parsing), `make contract` gate; see ADR-0014 |
+| 13 | Resilience: circuit breakers, retries, chaos | **done** — breakers + bounded retry on both sync hops, identity-keyed gateway rate limiting, chaos script proving degraded-not-dead live; see ADR-0015 |
+| 14 | Performance and load testing | **done** — smoke loader (`make load-smoke`) with measured p95 baseline, exact-money and journal assertions; bounds documented in `docs/performance.md` |
+| 15 | Kubernetes, Helm, network policy, secrets | **done** — Helm chart (10 services, per-service secrets, probes, bounds), default-deny NetworkPolicies, provisioned PKI; Java mTLS migration designed in ADR-0016 |
+| 16 | Production hardening, runbooks, SLOs | **done** — incident runbooks, SLOs with burn-rate alerts, backup/restore, rotation procedures; see `docs/runbooks/` |
 
 ---
 
 ## Documentation
 
 - [docs/architecture.md](docs/architecture.md) — the shape of the system and why
+- [docs/performance.md](docs/performance.md) — measured baseline, knobs, bottlenecks, and what local numbers do not prove
+- [docs/slo.md](docs/slo.md) — the two objectives and their burn-rate alerts
+- [docs/runbooks/](docs/runbooks/) — incident procedures with copy-paste triage
 - [docs/security.md](docs/security.md) — threat model and controls
 - [docs/decisions/0005-pii-encrypted-at-rest.md](docs/decisions/0005-pii-encrypted-at-rest.md) —
   why personal data is encrypted per customer, and what that costs
@@ -570,5 +613,14 @@ Things that are deliberately *not* what production looks like, so nobody mistake
 - [docs/decisions/0013-static-customer-ui.md](docs/decisions/0013-static-customer-ui.md)
   — why the UI is static files with no backend, why the password grant is fenced to local
   development, and why the token lives in memory
+- [docs/decisions/0014-wire-contracts-without-a-broker.md](docs/decisions/0014-wire-contracts-without-a-broker.md)
+  — why wire contracts are shared fixtures consumed on both sides instead of a broker,
+  and why the OpenAPI assertions pin names rather than snapshots
+- [docs/decisions/0015-breakers-limits-and-practiced-outages.md](docs/decisions/0015-breakers-limits-and-practiced-outages.md)
+  — why breakers pair with retries and timeouts as a triple, why limits are keyed by
+  identity, and why chaos is practiced live while trip dynamics stay in unit tests
+- [docs/decisions/0016-mtls-migration-and-pki.md](docs/decisions/0016-mtls-migration-and-pki.md)
+  — why the PKI is provisioned while the Java migration waits for a live peer,
+  and the dual-trust sequence that retires the shared HMAC key
 - [docs/deployment.md](docs/deployment.md) — local versus production
 - [docs/decisions/](docs/decisions/) — architecture decision records

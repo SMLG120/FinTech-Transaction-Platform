@@ -1,7 +1,9 @@
 package com.fintech.platform.dispute.config;
 
 import com.fintech.platform.common.identity.InternalIdentityCodec;
+import com.fintech.platform.common.resilience.OutboundGuard;
 import com.fintech.platform.dispute.service.TransactionLookup;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Clock;
 import java.time.Duration;
 import org.springframework.beans.factory.annotation.Value;
@@ -31,21 +33,44 @@ public class TransactionClientConfiguration {
      *
      * <p>Two seconds is short on purpose. The caller is waiting to be told whether their case
      * exists; a longer budget would only make them wait longer for the same 503.
+     *
+     * <p>The guard on top retries once on a transport failure or 5xx, then opens the circuit for
+     * thirty seconds: a downed transaction-service fails callers immediately instead of holding a
+     * request thread each for the full timeout. Counters are {@code outbound.guard.*} tagged
+     * {@code guard=transaction-lookup}.
      */
     @Bean
     public TransactionLookup transactionLookup(
             RestClient.Builder builder,
             InternalIdentityCodec codec,
             Clock clock,
+            MeterRegistry meters,
             @Value("${platform.dispute.transaction-service.base-url:http://localhost:8084}") String baseUrl,
-            @Value("${platform.dispute.transaction-service.timeout-ms:2000}") long timeoutMillis) {
+            @Value("${platform.dispute.transaction-service.timeout-ms:2000}") long timeoutMillis,
+            @Value("${platform.dispute.transaction-service.guard.failure-rate-threshold:50}")
+                    float failureRateThreshold,
+            @Value("${platform.dispute.transaction-service.guard.sliding-window-size:10}") int windowSize,
+            @Value("${platform.dispute.transaction-service.guard.open-wait-seconds:30}") long openWaitSeconds,
+            @Value("${platform.dispute.transaction-service.guard.max-attempts:2}") int maxAttempts,
+            @Value("${platform.dispute.transaction-service.guard.retry-wait-ms:200}") long retryWaitMillis) {
 
         Duration timeout = Duration.ofMillis(timeoutMillis);
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout((int) timeout.toMillis());
         factory.setReadTimeout((int) timeout.toMillis());
 
+        OutboundGuard guard = OutboundGuard.of(
+                "transaction-lookup",
+                new OutboundGuard.Settings(
+                        failureRateThreshold,
+                        windowSize,
+                        Duration.ofSeconds(openWaitSeconds),
+                        1,
+                        maxAttempts,
+                        Duration.ofMillis(retryWaitMillis)),
+                meters);
+
         RestClient http = builder.baseUrl(baseUrl).requestFactory(factory).build();
-        return new TransactionLookup(http, codec, timeout);
+        return new TransactionLookup(http, codec, timeout, guard);
     }
 }

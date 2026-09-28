@@ -27,6 +27,7 @@ WORKDIR /build
 # COPY layer above it is invalidated. Caching the source copy too would be nicer, not better.
 COPY pom.xml ./
 COPY platform ./platform
+COPY contracts ./contracts
 COPY services ./services
 
 # `sharing=locked` stops parallel image builds from corrupting the shared local Maven repository.

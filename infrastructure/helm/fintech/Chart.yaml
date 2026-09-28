@@ -1,0 +1,10 @@
+apiVersion: v2
+name: fintech
+description: >-
+  Secure FinTech Transaction Platform on Kubernetes. Ten Spring services with
+  per-service secrets, health probes, and resource bounds. External
+  dependencies (PostgreSQL, Redis, Kafka, Keycloak, Prometheus) are expected
+  to exist in the cluster; this chart deploys the platform, not the world.
+type: application
+version: 0.1.0
+appVersion: 0.1.0-SNAPSHOT

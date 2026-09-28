@@ -54,6 +54,15 @@ verify: ## Run the full build: compile, test, and write the coverage report
 .PHONY: quality
 quality: verify format-check ## Run the full build and assert formatting
 
+.PHONY: contract
+contract: ## Run the wire-contract tests: OpenAPI specs, shared fixtures, event envelopes, frontend parsing
+	@echo "> $(MVN) $(MVN_FLAGS) -pl contracts install -DskipTests"
+	@$(MVN) $(MVN_FLAGS) -pl contracts install -DskipTests
+	@echo "> $(MVN) $(MVN_FLAGS) test -Dtest='*ContractTest,CustomerServiceEligibilityTest,TransactionLookupTest' -DfailIfNoTests=false -Dsurefire.failIfNoSpecifiedTests=false"
+	@$(MVN) $(MVN_FLAGS) test -Dtest='*ContractTest,CustomerServiceEligibilityTest,TransactionLookupTest' -DfailIfNoTests=false -Dsurefire.failIfNoSpecifiedTests=false
+	@echo "> npm contract tests in frontend/fintech-dashboard/"
+	@cd frontend/fintech-dashboard && npm test --silent -- src/api/contractSchemas.test.ts
+
 .PHONY: format
 format: ## Reformat all Java sources (in the pinned JDK 21 image)
 	@echo "> $(MVN_IMAGE) ./mvnw $(MVN_FLAGS) -Pquality spotless:apply"
@@ -157,6 +166,41 @@ verify-live: ## Assert the card, payment, fraud, settlement, notification, audit
 	@./scripts/verify-dispute-lifecycle.sh
 	@echo "> ./scripts/verify-frontend-lifecycle.sh"
 	@./scripts/verify-frontend-lifecycle.sh
+	@echo "> ./scripts/chaos-degraded-lifecycle.sh"
+	@./scripts/chaos-degraded-lifecycle.sh
+
+# Like verify-live: needs a running stack, so not part of `check`.
+.PHONY: load-smoke
+load-smoke: ## Drive a bounded burst of payments and assert latency, errors and ledger exactness
+	@echo "> ./scripts/load-smoke.sh"
+	@./scripts/load-smoke.sh
+
+# No cluster needed: lint, render with throwaway secrets, and schema-validate.
+# kubectl dry-run additionally needs a cluster, so it stays documented rather
+# than gated (see infrastructure/helm/fintech/README.md).
+.PHONY: helm-template
+helm-template: ## Lint and render the Helm chart and validate all manifests
+	@echo "> helm lint infrastructure/helm/fintech"
+	@helm lint infrastructure/helm/fintech
+	@echo "> helm template (throwaway secrets, never committed)"
+	@helm template fintech infrastructure/helm/fintech \
+		--set global.identitySigningKey=smoke --set global.redisPassword=smoke \
+		--set services.customer-service.secrets.CUSTOMER_PII_MASTER_KEY=smoke \
+		--set services.card-service.secrets.CARD_TOKENISATION_KEY=smoke \
+		--set services.transaction-service.secrets.SUBJECT_DIGEST_KEY=smoke \
+		--set services.fraud-service.secrets.SUBJECT_DIGEST_KEY=smoke \
+		--set services.auth-service.secrets.SERVICE_DB_PASSWORD=smoke \
+		--set services.customer-service.secrets.SERVICE_DB_PASSWORD=smoke \
+		--set services.card-service.secrets.SERVICE_DB_PASSWORD=smoke \
+		--set services.transaction-service.secrets.SERVICE_DB_PASSWORD=smoke \
+		--set services.fraud-service.secrets.SERVICE_DB_PASSWORD=smoke \
+		--set services.notification-service.secrets.SERVICE_DB_PASSWORD=smoke \
+		--set services.audit-service.secrets.SERVICE_DB_PASSWORD=smoke \
+		--set services.dispute-service.secrets.SERVICE_DB_PASSWORD=smoke \
+		--set services.settlement-service.secrets.SERVICE_DB_PASSWORD=smoke \
+		> /tmp/fintech-render.yaml
+	@echo "> kubeconform (skip when not installed)"
+	@command -v kubeconform >/dev/null && kubeconform -kubernetes-version 1.32.0 -summary /tmp/fintech-render.yaml || echo "kubeconform not installed; lint+render passed"
 
 # ---------------------------------------------------------------------------------------------
 # Web frontend

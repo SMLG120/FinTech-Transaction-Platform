@@ -1,0 +1,28 @@
+{{- /*
+ClusterIP for everything, including the gateway. Production fronts the
+gateway with an ingress and TLS termination; that object is deliberately not
+here — an ingress with a placeholder hostname and no certificate is a route
+that looks finished and is not.
+*/ -}}
+{{- range $name, $svc := .Values.services }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $.Release.Name }}-{{ $name }}
+  labels:
+    app.kubernetes.io/name: {{ $name | quote }}
+    app.kubernetes.io/instance: {{ $.Release.Name | quote }}
+    app.kubernetes.io/managed-by: {{ $.Release.Service | quote }}
+    app.kubernetes.io/part-of: secure-fintech-platform
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: {{ $name | quote }}
+    app.kubernetes.io/instance: {{ $.Release.Name | quote }}
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+{{- end }}

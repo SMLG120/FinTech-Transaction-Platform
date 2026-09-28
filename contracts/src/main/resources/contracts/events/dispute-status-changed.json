@@ -1,0 +1,16 @@
+{
+  "eventId": "44444444-5555-6666-7777-888888888888",
+  "eventType": "dispute.resolved.refunded",
+  "eventVersion": 1,
+  "occurredAt": "2026-09-20T10:05:00Z",
+  "correlationId": "55555555-6666-7777-8888-999999999999",
+  "aggregateType": "Dispute",
+  "aggregateId": "33333333-4444-5555-6666-777777777777",
+  "payload": {
+    "disputeId": "33333333-4444-5555-6666-777777777777",
+    "transactionId": "22222222-3333-4444-5555-666666666666",
+    "reason": "FRAUD",
+    "outcome": "REFUNDED"
+  },
+  "metadata": {}
+}

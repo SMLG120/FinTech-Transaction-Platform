@@ -293,10 +293,12 @@ they are expected to stay in a non-firing state until the services that produce 
 
 ## Deliberately not here yet
 
-- Kubernetes manifests or Helm charts.
 - CI/CD pipelines.
-- TLS termination, ingress certificates, and network policies.
-- Backups, restore procedures, and disaster recovery.
+- TLS termination, ingress certificates, and the Java half of mTLS (PKI
+  manifests and the migration design are in the chart and ADR-0016).
+- Managed backups and disaster recovery beyond the local `scripts/backup-postgres.sh`
+  procedure (dump, restore, and rotation runbooks live in `docs/runbooks/`).
 
-Phases 2 through 16 add these in order; the architecture rationale is in
-[architecture.md](architecture.md) and the sequencing in the README.
+The remaining items above are operations to buy, not code to write in this
+repository; the architecture rationale is in [architecture.md](architecture.md)
+and the sequencing in the README.

@@ -1,0 +1,151 @@
+{{- /*
+One Deployment per service from a single loop, because the ten services differ
+only in configuration, never in shape: same image layout, same probes, same
+security posture, same graceful shutdown. A difference that cannot be expressed
+in values is a difference that belongs in a service's own chart, not in a
+tenth copy of this file.
+*/ -}}
+{{- range $name, $svc := .Values.services }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $.Release.Name }}-{{ $name }}
+  labels:
+    app.kubernetes.io/name: {{ $name | quote }}
+    app.kubernetes.io/instance: {{ $.Release.Name | quote }}
+    app.kubernetes.io/managed-by: {{ $.Release.Service | quote }}
+    app.kubernetes.io/part-of: secure-fintech-platform
+spec:
+  # One replica in this chart. Production scales per service, driven by load —
+  # an overlay sets it, not a default pretending to know.
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name | quote }}
+      app.kubernetes.io/instance: {{ $.Release.Name | quote }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ $name | quote }}
+        app.kubernetes.io/instance: {{ $.Release.Name | quote }}
+    spec:
+      # Thirty seconds to drain in flight, matching server.shutdown=graceful
+      # and the Compose stop_grace_period.
+      terminationGracePeriodSeconds: 30
+      # Each pod runs as its own service account: the identity its future
+      # certificate binds to (see templates/pki.yaml and ADR-0016).
+      serviceAccountName: {{ $.Release.Name }}-{{ $name }}
+      securityContext:
+        runAsNonRoot: true
+        # The image's fintech user (see infrastructure/docker/Dockerfile.service).
+        runAsUser: 1001
+        runAsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: {{ $name | quote }}
+          image: "{{ $.Values.global.imageRegistry }}fintech/{{ $name }}:{{ $.Values.global.imageTag }}"
+          imagePullPolicy: {{ $.Values.global.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ $svc.port }}
+          env:
+            - name: APP_ENVIRONMENT
+              value: {{ $.Values.global.environment | quote }}
+            - name: APP_VERSION
+              value: {{ $.Values.global.version | quote }}
+            - name: LOG_FORMAT
+              value: "ecs"
+            - name: SERVER_PORT
+              value: {{ $svc.port | quote }}
+            - name: JAVA_TOOL_OPTIONS
+              value: {{ $.Values.global.javaToolOptions | quote }}
+            {{- if $svc.database }}
+            # Migrations run as a pre-deploy job in production, never in the
+            # serving pods: a rolling deployment would otherwise migrate
+            # concurrently from several replicas (see docs/deployment.md).
+            - name: SPRING_FLYWAY_ENABLED
+              value: "false"
+            - name: SERVICE_DB_URL
+              value: {{ $svc.database.url | quote }}
+            - name: SERVICE_DB_USERNAME
+              value: {{ $svc.database.username | quote }}
+            {{- end }}
+            {{- if $svc.redis }}
+            - name: REDIS_HOST
+              value: {{ $.Values.global.redisHost | quote }}
+            - name: REDIS_PORT
+              value: {{ $.Values.global.redisPort | quote }}
+            {{- end }}
+            {{- if $svc.kafka }}
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: {{ $.Values.global.kafkaBootstrapServers | quote }}
+            {{- end }}
+            {{- if $svc.keycloakIssuer }}
+            - name: KEYCLOAK_ISSUER
+              value: {{ $svc.keycloakIssuer | quote }}
+            - name: KEYCLOAK_JWK_SET_URI
+              value: {{ $svc.keycloakJwkSetUri | quote }}
+            - name: KEYCLOAK_API_AUDIENCE
+              value: {{ $svc.keycloakAudience | quote }}
+            - name: GATEWAY_CORS_ALLOWED_ORIGINS
+              value: {{ $svc.corsAllowedOrigins | quote }}
+            - name: APP_GATEWAY_RATE_LIMIT_REPLENISH_PER_SECOND
+              value: {{ $svc.rateLimitReplenishPerSecond | quote }}
+            - name: APP_GATEWAY_RATE_LIMIT_BURST
+              value: {{ $svc.rateLimitBurst | quote }}
+            {{- end }}
+            {{- range $var, $url := $svc.serviceUrls }}
+            - name: {{ $var }}
+              value: {{ $url | quote }}
+            {{- end }}
+            {{- if $svc.customerServiceUrl }}
+            - name: CUSTOMER_SERVICE_URL
+              value: {{ $svc.customerServiceUrl | quote }}
+            {{- end }}
+            {{- if $svc.transactionServiceUrl }}
+            - name: TRANSACTION_SERVICE_URL
+              value: {{ $svc.transactionServiceUrl | quote }}
+            {{- end }}
+          # Secrets arrive as environment, never baked into the image. The
+          # shared secret holds the interim shared values (redis password,
+          # identity key); the per-service secret holds that service's own.
+          envFrom:
+            - secretRef:
+                name: {{ $.Release.Name }}-shared
+            {{- if $svc.secrets }}
+            - secretRef:
+                name: {{ $.Release.Name }}-{{ $name }}
+            {{- end }}
+          # Same endpoints the Docker healthcheck curls. Generous initial
+          # delays: a cold JVM with Flyway validations boots slower than the
+          # scheduler's first probe, and a pod killed for starting slowly is
+          # a deployment that can never finish starting.
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            initialDelaySeconds: 120
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # Starting points, not tuned values: the JVM sizes itself at 70% of
+          # the limit (see javaToolOptions), so raising the limit raises the
+          # heap. Tune from the Grafana heap/GC panels, not from guesses.
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 1Gi
+{{- end }}

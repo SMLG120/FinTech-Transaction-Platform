@@ -1,0 +1,61 @@
+{{- /*
+Private PKI for service identity. Rendered ONLY with pki.enabled=true: the
+cert-manager CRDs below are unknown to client-side validation, so including
+them in the default render would break the cluster-free gate
+(`make helm-template`). Review with --set pki.enabled=true; apply with
+--dry-run=server against a cluster running cert-manager.
+
+What this provisions, per service: a certificate whose DNS SANs cover every
+name the platform dials (short name, namespaced, and fully qualified) and
+whose URI SAN is the service's SPIFFE identity, bound to its ServiceAccount.
+The Java migration (ADR-0016) verifies the client certificate's URI SAN in
+the identity filter alongside the HMAC during a dual-trust period, then
+retires the shared key — at which point a compromised service holds
+credentials for itself and nothing else.
+*/ -}}
+{{- if .Values.pki.enabled }}
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: {{ .Values.pki.issuerName }}
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service | quote }}
+    app.kubernetes.io/part-of: secure-fintech-platform
+spec:
+  # Self-signed development root. Production replaces this stanza with a real
+  # CA (private PKI or ACME): the Certificates below reference the issuer by
+  # name, so the swap touches one object, not ten.
+  selfSigned: {}
+{{- range $name, $svc := .Values.services }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ $.Release.Name }}-{{ $name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ $name | quote }}
+    app.kubernetes.io/instance: {{ $.Release.Name | quote }}
+    app.kubernetes.io/managed-by: {{ $.Release.Service | quote }}
+    app.kubernetes.io/part-of: secure-fintech-platform
+spec:
+  secretName: {{ $.Release.Name }}-{{ $name }}-tls
+  issuerRef:
+    name: {{ $.Values.pki.issuerName }}
+    kind: ClusterIssuer
+  commonName: {{ $.Release.Name }}-{{ $name }}
+  dnsNames:
+    - {{ $.Release.Name }}-{{ $name }}
+    - {{ $.Release.Name }}-{{ $name }}.{{ $.Release.Namespace }}
+    - {{ $.Release.Name }}-{{ $name }}.{{ $.Release.Namespace }}.svc.cluster.local
+  uris:
+    - spiffe://fintech/{{ $name }}
+  duration: {{ printf "%dh" ($.Values.pki.durationHours | int) }}
+  renewBefore: {{ printf "%dh" ($.Values.pki.renewBeforeHours | int) }}
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+{{- end }}
+{{- end }}

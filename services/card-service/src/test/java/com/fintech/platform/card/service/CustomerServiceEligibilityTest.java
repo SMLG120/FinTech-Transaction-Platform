@@ -8,8 +8,11 @@ import com.fintech.platform.card.error.CardErrorCodes;
 import com.fintech.platform.common.error.ApiException;
 import com.fintech.platform.common.identity.InternalIdentity;
 import com.fintech.platform.common.identity.InternalIdentityCodec;
+import com.fintech.platform.common.resilience.OutboundGuard;
 import com.sun.net.httpserver.HttpServer;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
@@ -62,11 +65,15 @@ class CustomerServiceEligibilityTest {
             """;
     private volatile long delayMillis = 0;
 
+    /** Hits against the stub, so a test can prove the breaker stopped calling. */
+    private final AtomicReference<Integer> hits = new AtomicReference<>(0);
+
     @BeforeEach
     void startServer() throws IOException {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/", exchange -> {
             requestedPath.set(exchange.getRequestURI().getPath());
+            hits.updateAndGet(count -> count + 1);
             lastHeaders.set(java.util.stream.StreamSupport.stream(
                             exchange.getRequestHeaders().entrySet().spliterator(), false)
                     .collect(java.util.stream.Collectors.toMap(
@@ -87,13 +94,15 @@ class CustomerServiceEligibilityTest {
             }
         });
         server.start();
+        hits.set(0);
 
         eligibility = new CustomerServiceEligibility(
                 RestClient.builder()
                         .baseUrl("http://127.0.0.1:" + server.getAddress().getPort())
                         .build(),
                 CODEC,
-                TIMEOUT);
+                TIMEOUT,
+                testGuard());
     }
 
     @AfterEach
@@ -106,6 +115,10 @@ class CustomerServiceEligibilityTest {
     @Test
     @DisplayName("approves a cardholder whose identity check is approved")
     void approves() {
+        // The full realistic profile from the shared contract fixture, not the minimal
+        // shape: the adapter must tolerate the real response, unknown fields and all.
+        // The producer side pins the same bytes in CustomerEligibilityContractTest.
+        body = fixture("contracts/eligibility-response.json");
         assertThat(eligibility.isApproved(CUSTOMER_ID, caller())).isTrue();
     }
 
@@ -166,6 +179,49 @@ class CustomerServiceEligibilityTest {
         // The path is the only place the customer id travels, so it is asserted against the id rather
         // than left implied by the fact that the call returned at all.
         assertThat(requestedPath.get()).isEqualTo("/api/v1/customers/" + CUSTOMER_ID);
+    }
+
+    // ------------------------------------------------------- circuit breaker
+
+    @Test
+    @DisplayName("opens after consecutive outages and fails fast without calling")
+    void opensAndFailsFast() {
+        // A downed customer-service must cost microseconds per caller, not a thread
+        // held for the full timeout each: once the window fills with failures the
+        // breaker refuses without touching the network, and the refusal carries the
+        // same fail-closed code as the outage itself.
+        status = 500;
+
+        for (int i = 0; i < 2; i++) {
+            assertThatThrownBy(() -> eligibility.isApproved(CUSTOMER_ID, caller()))
+                    .isInstanceOf(ApiException.class)
+                    .extracting(e -> ((ApiException) e).getErrorCode().code())
+                    .isEqualTo(CardErrorCodes.ELIGIBILITY_UNAVAILABLE.code());
+        }
+        int hitsAfterTrip = hits.get();
+
+        assertThatThrownBy(() -> eligibility.isApproved(CUSTOMER_ID, caller()))
+                .isInstanceOf(ApiException.class)
+                .extracting(e -> ((ApiException) e).getErrorCode().code())
+                .isEqualTo(CardErrorCodes.ELIGIBILITY_UNAVAILABLE.code());
+        assertThat(hits.get()).isEqualTo(hitsAfterTrip);
+    }
+
+    @Test
+    @DisplayName("definitive refusals never trip the breaker")
+    void refusalsDoNotTripBreaker() {
+        // Five consecutive 403s are five answers, not an outage: the sixth call
+        // still goes through and its answer is honoured.
+        status = 403;
+        for (int i = 0; i < 5; i++) {
+            assertThatThrownBy(() -> eligibility.isApproved(CUSTOMER_ID, caller()))
+                    .isInstanceOf(ApiException.class)
+                    .extracting(e -> ((ApiException) e).getErrorCode().code())
+                    .isEqualTo(CardErrorCodes.NOT_THE_CARDHOLDER.code());
+        }
+
+        status = 200;
+        assertThat(eligibility.isApproved(CUSTOMER_ID, caller())).isTrue();
     }
 
     // -------------------------------------------------------------- refusals
@@ -283,7 +339,8 @@ class CustomerServiceEligibilityTest {
                         })
                         .build(),
                 CODEC,
-                TIMEOUT);
+                TIMEOUT,
+                testGuard());
 
         assertThatThrownBy(() -> eligibility.isApproved(CUSTOMER_ID, caller()))
                 .isInstanceOf(ApiException.class)
@@ -307,5 +364,27 @@ class CustomerServiceEligibilityTest {
 
     private static InternalIdentity caller(String... roles) {
         return new InternalIdentity(SUBJECT, "test-user", List.of(roles), "corr-1", Instant.now());
+    }
+
+    /**
+     * A guard tuned to trip fast: two calls decide, one attempt each, no waiting.
+     * Production uses a wider window and a thirty-second open; the discipline is
+     * identical, only the patience differs.
+     */
+    private static OutboundGuard testGuard() {
+        return OutboundGuard.of(
+                "test",
+                new OutboundGuard.Settings(50, 2, Duration.ofMinutes(1), 1, 1, Duration.ZERO),
+                new SimpleMeterRegistry());
+    }
+
+    private static String fixture(String name) {
+        try (InputStream in =
+                CustomerServiceEligibilityTest.class.getClassLoader().getResourceAsStream(name)) {
+            assertThat(in).as("contract fixture %s on the test classpath", name).isNotNull();
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            throw new IllegalStateException("cannot read contract fixture " + name, e);
+        }
     }
 }

@@ -1,0 +1,19 @@
+Secure FinTech Transaction Platform, release {{ .Release.Name | quote }}.
+
+External dependencies this chart does NOT install (provide them first):
+  - PostgreSQL with one database and role per service (see the
+    services.*.database blocks in values)
+  - Redis at {{ .Values.global.redisHost }}:{{ .Values.global.redisPort }}
+  - Kafka at {{ .Values.global.kafkaBootstrapServers }}
+  - An identity provider at {{ (index .Values.services "api-gateway").keycloakIssuer }}
+
+Before serving traffic:
+  1. Run database migrations as a pre-deploy job (the pods start with
+     SPRING_FLYWAY_ENABLED=false; see docs/deployment.md).
+  2. Reach the gateway with a port-forward; there is no ingress here:
+       kubectl port-forward svc/{{ .Release.Name }}-api-gateway 8080:80
+  3. Rotate the interim INTERNAL_IDENTITY_SIGNING_KEY out when per-service
+     certificates land (ADR-0016).
+
+Check rollout with:
+  kubectl rollout status deployment/{{ .Release.Name }}-api-gateway

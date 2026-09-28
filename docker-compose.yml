@@ -426,6 +426,12 @@ services:
     environment:
       <<: *service-env
       SERVER_PORT: "8080"
+      # Browser origins allowed to call /api/**. The static UI (:3001) plus the
+      # React dashboard dev server (:5173): without its origin here, a UI's
+      # preflight fails and every call after login dies as a CORS error.
+      # Production serves the UI from its own origin and sets this to exactly
+      # that — the application.yml default (:3001 only) stays the fallback.
+      GATEWAY_CORS_ALLOWED_ORIGINS: ${GATEWAY_CORS_ALLOWED_ORIGINS:-http://localhost:3001,http://localhost:5173}
       # The issuer is the value clients see in a token, and the JWK address is what this container
       # can reach. The gateway runs on the compose network, where localhost is itself, so the two
       # differ: a client on the host gets tokens whose issuer is localhost, and the gateway must

@@ -21,6 +21,22 @@ spring:
           min-idle: 2
   cloud:
     gateway:
+      # One limiter on every route, keyed by the caller (see RateLimitConfiguration). Per-route
+      # snowflakes are refused here: no route has a known legitimate burst yet, and the day one
+      # does, its filter declares it next to its path. Until then a single reviewed pair of
+      # numbers beats eight copies of them.
+      default-filters:
+        - name: RequestRateLimiter
+          args:
+            rate-limiter: "#{@platformRateLimiter}"
+            key-resolver: "#{@callerKeyResolver}"
+      # Bounding gateway threads, not enforcing SLAs. The connect timeout matches the
+      # service-to-service posture (2s); the response timeout must exceed the slowest
+      # legitimate downstream call (services cancel runaway statements at 30s), so it
+      # clips only the calls that were never going to answer.
+      httpclient:
+        connect-timeout: 2000
+        response-timeout: 30s
       # Browser access for the local web UI. One origin, loopback, enumerated rather than
       # wildcarded: `allowedOrigins: "*"` would answer every site's preflight, and with
       # allow-credentials off that still trains reviewers to ignore the block. Production serves

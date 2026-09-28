@@ -174,3 +174,68 @@ groups:
         annotations:
           summary: "Prometheus storage is predicted to fill within 4 hours"
           description: "At a 15 day retention, an unnoticed growth in series cardinality shows up here rather than as a failed write."
+
+  # ---------------------------------------------------------------------------
+  # SLO burn: the error budget and the latency bound from docs/slo.md.
+  #
+  # Thresholds are development values, like every rule in this file: on a
+  # quiet local stack a ratio over sparse traffic is noisy, so the windows
+  # are long and the severities stay below paging. Production thresholds
+  # follow from measured traffic, not from these numbers.
+  # ---------------------------------------------------------------------------
+  - name: slo_burn
+    rules:
+      - alert: ErrorBudgetFastBurn
+        # Twice the correctness alert's ratio, sustained six times as long: a
+        # real bleed rather than a bad five minutes.
+        expr: |
+          sum by (service) (
+            rate(http_server_requests_seconds_count{job="platform-services", status=~"5.."}[30m])
+          )
+          /
+          clamp_min(sum by (service) (
+            rate(http_server_requests_seconds_count{job="platform-services"}[30m])
+          ), 0.000001)
+          > 0.1
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.service }} is burning its error budget at 100x"
+          description: "5xx above 10% for 40 minutes against a 99.9% SLO. See docs/runbooks/payments-failing.md."
+
+      - alert: ErrorBudgetSlowBurn
+        # Catches the bleed the 5-minute correctness window misses: 1% errors
+        # sustained over hours still exhausts a 99.9% monthly budget.
+        expr: |
+          sum by (service) (
+            rate(http_server_requests_seconds_count{job="platform-services", status=~"5.."}[6h])
+          )
+          /
+          clamp_min(sum by (service) (
+            rate(http_server_requests_seconds_count{job="platform-services"}[6h])
+          ), 0.000001)
+          > 0.01
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.service }} is burning its error budget at 10x"
+          description: "5xx above 1% for hours against a 99.9% SLO. See docs/runbooks/payments-failing.md."
+
+      - alert: PaymentLatencyBreach
+        # The load-smoke bound (docs/performance.md): transaction-service p95
+        # above half a second for a quarter hour. Measured p95 is ~0.1s, so
+        # this has 5x headroom — it catches a real regression, not noise.
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (
+              rate(http_server_requests_seconds_bucket{job="platform-services", service="transaction-service"}[15m])
+            )
+          ) > 0.5
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "transaction-service p95 latency is above 0.5s"
+          description: "Authorisation is slower than the load-smoke bound. Check ThreadPoolExhaustion and ConnectionPoolExhaustion on the same service first."

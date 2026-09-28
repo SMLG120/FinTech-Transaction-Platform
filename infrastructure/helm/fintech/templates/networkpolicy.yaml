@@ -1,0 +1,86 @@
+{{- /*
+Network policy: default deny, explicit allows, nothing else.
+
+The documented threat is inbound reachability: a service that can be reached
+directly can mint identity headers for any user until mTLS lands (ADR-0004),
+so the only pods that accept traffic are the gateway (from anywhere — it is
+the front door) and the services (from the gateway, plus the two synchronous
+service-to-service hops). Everything else a pod receives is refused by the
+first policy below.
+
+Egress is deliberately NOT restricted here. The gateway calls an external
+identity provider and the services call external datastores, none of which
+can be enumerated as pod selectors; an egress policy that allows 0.0.0.0/443
+for those would be theatre with an exception list. Locking egress down needs
+known infra CIDRs and belongs in a production overlay, stated here so its
+absence is a recorded decision rather than an oversight.
+*/ -}}
+{{- if .Values.networkPolicy.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-default-deny-ingress
+  labels:
+    app.kubernetes.io/instance: {{ .Release.Name | quote }}
+    app.kubernetes.io/managed-by: {{ .Release.Service | quote }}
+    app.kubernetes.io/part-of: secure-fintech-platform
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+{{- range $name, $svc := .Values.services }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $.Release.Name }}-allow-to-{{ $name }}
+  labels:
+    app.kubernetes.io/name: {{ $name | quote }}
+    app.kubernetes.io/instance: {{ $.Release.Name | quote }}
+    app.kubernetes.io/managed-by: {{ $.Release.Service | quote }}
+    app.kubernetes.io/part-of: secure-fintech-platform
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name | quote }}
+      app.kubernetes.io/instance: {{ $.Release.Name | quote }}
+  policyTypes:
+    - Ingress
+  ingress:
+    {{- if eq $name "api-gateway" }}
+    # The front door: the only pods in the release reachable from outside the
+    # namespace. Authentication and coarse authorisation happen here, nowhere else.
+    - ports:
+        - port: 8080
+          protocol: TCP
+    {{- else }}
+    # The gateway plus this service's declared callers. customer-service also
+    # answers card-service's eligibility check and transaction-service answers
+    # dispute-service's lookup — the platform's only two synchronous hops, and
+    # the only service-to-service traffic that may exist. Anything else
+    # arriving at these pods is refused by the default-deny above.
+    {{- range $peer := $svc.ingressFrom }}
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ $peer | quote }}
+              app.kubernetes.io/instance: {{ $.Release.Name | quote }}
+      ports:
+        - port: {{ $svc.port }}
+          protocol: TCP
+    {{- end }}
+    {{- end }}
+    # Metrics scraping, separate from application traffic: the actuator shares
+    # the container port, so the scrape rule cannot name a different one. The
+    # monitoring namespace must carry the label `name: <value>` — without it
+    # this rule matches nothing and metrics go dark rather than insecure.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: {{ $.Values.networkPolicy.monitoringNamespace | quote }}
+      ports:
+        - port: {{ $svc.port }}
+          protocol: TCP
+{{- end }}
+{{- end }}

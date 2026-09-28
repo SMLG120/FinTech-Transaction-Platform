@@ -96,8 +96,11 @@ file is read in full.
   appears on a fresh import, so a description that grows past the limit sits in the file silently
   until the next delete-and-restart. Count before committing.
 - **`webOrigins` on `fintech-web` lists every browser origin that may call the token endpoint,
-  currently `http://localhost:3000`, `http://localhost:3001` (the web UI) and
-  `http://localhost:8081`.** An origin added to the gateway's CORS allow-list but not here gets
+  currently `http://localhost:3000`, `http://localhost:3001` (the web UI),
+  `http://localhost:8081` and `http://localhost:5173` (the React dashboard dev
+  server).** Without its origin here, a UI gets no `Access-Control-Allow-Origin`
+  on the token response and the browser blocks reading it, which surfaces as
+  a bare "fail to fetch" rather than a login error. An origin added to the gateway's CORS allow-list but not here gets
   `{"error":"Invalid origin"}` from the token endpoint — a login that fails before any password
   is checked, which reads as broken credentials rather than a mismatched string. Like every realm
   change, an addition here does nothing to a running stack until the realm is deleted and

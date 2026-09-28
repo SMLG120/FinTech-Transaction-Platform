@@ -10,6 +10,8 @@
 *.jks
 **/secrets/**
 !**/secrets/*.example.yaml
+# Database dumps hold customer data in the clear. Never committed, ever.
+backups/
 
 # ---------------------------------------------------------------- build output
 target/

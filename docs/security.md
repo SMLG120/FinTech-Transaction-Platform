@@ -178,8 +178,10 @@ These are absences, not risks that have been mitigated another way.
 - **No mutual TLS between the gateway and the services.** Identity headers are signed with a key
   that all nine services hold, so a service that can be reached directly can also mint an identity for
   any user. The signature stops a *client* from asserting a role; it does not stop a *service* from
-  doing so. Only the loopback binding and the shared-key distribution make this non-exploitable in
-  the local stack. (Phase 15.)
+  doing so. Reachability is now closed by default-deny NetworkPolicies (only the gateway and the two
+  declared sync hops can arrive), and the PKI plus the dual-trust Java migration are designed in
+  ADR-0016 — but until client certificates are verified, the loopback binding and the shared-key
+  distribution are what make this non-exploitable locally.
 - **One signing key, and it is in `.env`.** Every service holds the same value, so a key rotation is
   a coordinated restart rather than a gateway-only change, and a compromise of any one service
   compromises the ability to forge identity for all of them. (Phase 15.)
@@ -187,9 +189,14 @@ These are absences, not risks that have been mitigated another way.
   after the gateway signed it, so a revocation takes up to a minute to take effect and a captured
   request can be replayed inside that window. The bound is a deliberate limit on how long a stale
   authorisation is useful, not a replay defence.
-- **No rate limiting.** The gateway has no per-route or per-client limits. (Phase 3.)
+- **No per-client rate limiting.** The gateway enforces one Redis-backed limit keyed by
+  verified identity (100/s replenish, 200 burst by default) — enough against
+  accidental floods and runaway retries, not against a determined attacker,
+  which remains the ingress's job. See ADR-0015.
 - **No encryption in transit inside the Compose network.** Services, Kafka and Redis communicate in
-  cleartext on the local network. (Phases 8 and 15.)
+  cleartext on the local network. The Helm chart does not change this: pod traffic is
+  cleartext until the ADR-0016 Java migration terminates TLS, and Kafka/PostgreSQL/Redis TLS
+  remain separate, unsequenced work.
 - **No Kafka authorisation.** Any client that can reach Kafka can read or write any topic.
 - **Flyway runs at application startup.** Acceptable for the local stack and explicitly not the
   production posture, where migrations are applied by a separate job. See

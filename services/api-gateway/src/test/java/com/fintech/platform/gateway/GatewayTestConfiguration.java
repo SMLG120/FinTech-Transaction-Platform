@@ -2,6 +2,7 @@ package com.fintech.platform.gateway;
 
 import com.fintech.platform.gateway.testsupport.JwtFixture;
 import java.nio.charset.StandardCharsets;
+import java.util.Map;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
@@ -86,6 +87,57 @@ class GatewayTestConfiguration {
             response.setStatusCode(HttpStatus.OK);
             response.getHeaders().setContentType(MediaType.APPLICATION_JSON);
             return response.writeWith(Mono.just(response.bufferFactory().wrap(body)));
+        }
+    }
+
+    /**
+     * Stands in for the Redis rate limiter, which needs a Redis no test provides.
+     *
+     * <p>A {@code @Primary} controllable stub rather than a mock: the filter calls {@code
+     * isAllowed} for real, through the real route configuration, so a miswired filter name or
+     * key-resolver reference fails the suite instead of a wiring assertion. Deny is off unless a
+     * test asks for it, and the asking test resets it — a leaked denial would 429 every suite
+     * that runs after it in the fork.
+     */
+    @Bean
+    @Primary
+    ControllableRateLimiter testRateLimiter() {
+        return new ControllableRateLimiter();
+    }
+
+    static final class ControllableRateLimiter
+            implements org.springframework.cloud.gateway.filter.ratelimit.RateLimiter<Object> {
+
+        private volatile boolean deny = false;
+
+        void denyAll() {
+            deny = true;
+        }
+
+        void allowAll() {
+            deny = false;
+        }
+
+        @Override
+        public Mono<org.springframework.cloud.gateway.filter.ratelimit.RateLimiter.Response> isAllowed(
+                String routeId, String id) {
+            return Mono.just(
+                    new org.springframework.cloud.gateway.filter.ratelimit.RateLimiter.Response(!deny, Map.of()));
+        }
+
+        @Override
+        public Map<String, Object> getConfig() {
+            return Map.of();
+        }
+
+        @Override
+        public Class<Object> getConfigClass() {
+            return Object.class;
+        }
+
+        @Override
+        public Object newConfig() {
+            return Map.of();
         }
     }
 }

@@ -2,6 +2,7 @@ package com.fintech.platform.dispute.service;
 
 import com.fintech.platform.common.identity.InternalIdentity;
 import com.fintech.platform.common.identity.InternalIdentityCodec;
+import com.fintech.platform.common.resilience.OutboundGuard;
 import com.fintech.platform.dispute.error.DisputeErrors;
 import java.time.Duration;
 import java.util.UUID;
@@ -54,10 +55,13 @@ public class TransactionLookup {
 
     private final Duration timeout;
 
-    public TransactionLookup(RestClient http, InternalIdentityCodec codec, Duration timeout) {
+    private final OutboundGuard guard;
+
+    public TransactionLookup(RestClient http, InternalIdentityCodec codec, Duration timeout, OutboundGuard guard) {
         this.http = http;
         this.codec = codec;
         this.timeout = timeout;
+        this.guard = guard;
     }
 
     /** What a dispute needs to know about a payment: its settled state and its figure. */
@@ -95,11 +99,14 @@ public class TransactionLookup {
     private TransactionView fetch(UUID transactionId, InternalIdentity caller) {
         String url = "/api/v1/transactions/" + transactionId;
         try {
-            TransactionView payment = http.get()
-                    .uri(url)
-                    .headers(headers -> codec.headersFor(caller).forEach(headers::set))
-                    .retrieve()
-                    .body(TransactionView.class);
+            TransactionView payment = guard.execute(
+                    () -> http.get()
+                            .uri(url)
+                            .headers(headers -> codec.headersFor(caller).forEach(headers::set))
+                            .retrieve()
+                            .body(TransactionView.class),
+                    () -> DisputeErrors.TRANSACTION_UNAVAILABLE.exception(
+                            "transaction-service is not answering; failing closed without opening", timeoutDetails()));
             if (payment == null || payment.status() == null) {
                 throw DisputeErrors.TRANSACTION_UNAVAILABLE.exception(
                         "transaction-service returned no usable payment for " + transactionId, timeoutDetails());

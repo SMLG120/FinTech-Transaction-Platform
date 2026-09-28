@@ -3,6 +3,7 @@ package com.fintech.platform.card.service;
 import com.fintech.platform.card.error.CardErrorCodes;
 import com.fintech.platform.common.identity.InternalIdentity;
 import com.fintech.platform.common.identity.InternalIdentityCodec;
+import com.fintech.platform.common.resilience.OutboundGuard;
 import java.time.Duration;
 import java.util.UUID;
 import org.springframework.web.client.HttpClientErrorException;
@@ -22,10 +23,12 @@ import org.springframework.web.client.RestClientException;
  * <p>Three details are what keep a synchronous dependency from becoming a way to take the service down.
  *
  * <ul>
- *   <li><strong>Timeouts.</strong> Without them a hung customer-service converts into a hung card
+ * <li><strong>Timeouts — and a breaker behind them.</strong> Without them a hung customer-service converts into a hung card
  *       endpoint, and the thread pool exhausts on requests that can never be answered. The budget is
  *       short deliberately: a caller who cannot get an answer in two seconds does not get a card from
- *       this call.
+ *       this call. The {@link OutboundGuard} on top retries once on a transport failure or 5xx and
+ *       then opens the circuit, so a downed dependency fails callers in microseconds rather than
+ *       holding a thread each for the full timeout. Definitive 4xx answers neither retry nor trip it.
  *   <li><strong>Fail closed.</strong> Any failure, including an unexpected status, raises
  *       {@link CardErrorCodes#ELIGIBILITY_UNAVAILABLE} and issues nothing.
  *   <li><strong>The caller's identity is forwarded, not re-asserted.</strong> This service signs the
@@ -54,22 +57,28 @@ public class CustomerServiceEligibility implements CardIssuanceEligibility {
     private final RestClient http;
     private final InternalIdentityCodec codec;
     private final Duration timeout;
+    private final OutboundGuard guard;
 
-    public CustomerServiceEligibility(RestClient http, InternalIdentityCodec codec, Duration timeout) {
+    public CustomerServiceEligibility(
+            RestClient http, InternalIdentityCodec codec, Duration timeout, OutboundGuard guard) {
         this.http = http;
         this.codec = codec;
         this.timeout = timeout;
+        this.guard = guard;
     }
 
     @Override
     public boolean isApproved(UUID customerId, InternalIdentity caller) {
         String url = "/api/v1/customers/" + customerId;
         try {
-            EligibilityResponse response = http.get()
-                    .uri(url)
-                    .headers(headers -> codec.headersFor(caller).forEach(headers::set))
-                    .retrieve()
-                    .body(EligibilityResponse.class);
+            EligibilityResponse response = guard.execute(
+                    () -> http.get()
+                            .uri(url)
+                            .headers(headers -> codec.headersFor(caller).forEach(headers::set))
+                            .retrieve()
+                            .body(EligibilityResponse.class),
+                    () -> CardErrorCodes.ELIGIBILITY_UNAVAILABLE.exception(
+                            "customer-service is not answering; failing closed without issuing", timeoutDetails()));
 
             if (response == null || response.kycStatus() == null) {
                 // A 2xx with no usable body is a contract violation, not an approval. Treating the
