@@ -5,7 +5,7 @@ import type { ReactNode } from 'react';
 interface ToastItem {
   id: number;
   message: string;
-  tone: 'info' | 'error';
+  tone: 'info' | 'success' | 'error';
 }
 
 const ToastContext = createContext<{ notify: (message: string, tone?: ToastItem['tone']) => void }>({
@@ -43,7 +43,13 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           {items.map((item) => (
             <motion.div
               key={item.id}
-              className={item.tone === 'error' ? 'toast toast-error' : 'toast'}
+              className={
+                item.tone === 'error'
+                  ? 'toast toast-error'
+                  : item.tone === 'success'
+                    ? 'toast toast-success'
+                    : 'toast'
+              }
               initial={{ opacity: 0, y: 12 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 8 }}

@@ -7,13 +7,20 @@ interface Props extends ButtonHTMLAttributes<HTMLButtonElement> {
   size?: 'md' | 'sm';
 }
 
-export function Button({ variant = 'secondary', size = 'md', type = 'button', ...rest }: Props) {
+export function Button({
+  variant = 'secondary',
+  size = 'md',
+  type = 'button',
+  className,
+  ...rest
+}: Props) {
   const classes = [
     'btn',
     variant === 'primary' ? 'btn-primary' : '',
     variant === 'danger' ? 'btn-danger' : '',
     variant === 'ghost' ? 'btn-ghost' : '',
     size === 'sm' ? 'btn-sm' : '',
+    className ?? '',
   ]
     .filter(Boolean)
     .join(' ');

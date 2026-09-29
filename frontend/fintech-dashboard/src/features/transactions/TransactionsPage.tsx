@@ -3,7 +3,8 @@ import { Link } from 'react-router-dom';
 import { useTransactions } from '../../api/transactionApi';
 import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
-import { EmptyState, ErrorState, Skeleton } from '../../components/ui/states';
+import { PageHeader } from '../../components/ui/PageHeader';
+import { EmptyState, ErrorState, TableSkeleton } from '../../components/ui/states';
 import { formatMoney } from '../../utils/format';
 import type { Transaction } from '../../types';
 
@@ -47,6 +48,11 @@ export function queryTransactions(
   };
 }
 
+function formatDateTime(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
 export function TransactionsPage() {
   const { data, isPending, isError, error, refetch } = useTransactions(200);
   const [search, setSearch] = useState('');
@@ -64,8 +70,12 @@ export function TransactionsPage() {
   if (isPending) {
     return (
       <div>
-        <h1>Transactions</h1>
-        <Skeleton label="Loading transactions" />
+        <PageHeader
+          eyebrow="Money"
+          title="Transactions"
+          sub="Searchable ledger of every payment, with status and settlement state."
+        />
+        <TableSkeleton label="Loading transactions" />
       </div>
     );
   }
@@ -73,7 +83,11 @@ export function TransactionsPage() {
   if (isError) {
     return (
       <div>
-        <h1>Transactions</h1>
+        <PageHeader
+          eyebrow="Money"
+          title="Transactions"
+          sub="Searchable ledger of every payment, with status and settlement state."
+        />
         <ErrorState error={error} onRetry={() => void refetch()} />
       </div>
     );
@@ -82,10 +96,24 @@ export function TransactionsPage() {
   if (items.length === 0) {
     return (
       <div>
-        <h1>Transactions</h1>
+        <PageHeader
+          eyebrow="Money"
+          title="Transactions"
+          sub="Searchable ledger of every payment, with status and settlement state."
+          actions={
+            <Link to="/pay" className="btn btn-primary">
+              Make a payment
+            </Link>
+          }
+        />
         <EmptyState
           title="No transactions"
           body="Payments appear here once you fund your account and pay."
+          action={
+            <Link to="/pay" className="btn btn-primary">
+              Go to Pay & fund
+            </Link>
+          }
         />
       </div>
     );
@@ -93,13 +121,19 @@ export function TransactionsPage() {
 
   return (
     <div>
-      <h1>Transactions</h1>
-      <div
-        style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}
-        role="search"
-        aria-label="Search and filter transactions"
-      >
-        <div className="field" style={{ marginBottom: 0, minWidth: 220 }}>
+      <PageHeader
+        eyebrow="Money"
+        title="Transactions"
+        sub="Searchable ledger of every payment, with status and settlement state."
+        actions={
+          <Link to="/pay" className="btn btn-primary">
+            New payment
+          </Link>
+        }
+      />
+
+      <div className="toolbar" role="search" aria-label="Search and filter transactions">
+        <div className="field field-grow">
           <label className="field-label" htmlFor="txn-search">
             Search
           </label>
@@ -107,7 +141,7 @@ export function TransactionsPage() {
             id="txn-search"
             className="input"
             type="search"
-            placeholder="Payee, reference or ID"
+            placeholder="Payee, reference, ID, or amount"
             value={search}
             onChange={(event) => {
               setSearch(event.target.value);
@@ -115,7 +149,7 @@ export function TransactionsPage() {
             }}
           />
         </div>
-        <div className="field" style={{ marginBottom: 0 }}>
+        <div className="field">
           <label className="field-label" htmlFor="txn-status">
             Status
           </label>
@@ -130,12 +164,12 @@ export function TransactionsPage() {
           >
             {['ALL', 'PENDING', 'AUTHORIZED', 'DECLINED', 'SETTLED', 'REVERSED'].map((value) => (
               <option key={value} value={value}>
-                {value === 'ALL' ? 'All statuses' : value}
+                {value === 'ALL' ? 'All statuses' : value.charAt(0) + value.slice(1).toLowerCase()}
               </option>
             ))}
           </select>
         </div>
-        <div className="field" style={{ marginBottom: 0 }}>
+        <div className="field">
           <label className="field-label" htmlFor="txn-sort">
             Sort by
           </label>
@@ -155,14 +189,48 @@ export function TransactionsPage() {
             <option value="amount:asc">Lowest amount</option>
           </select>
         </div>
+        {(search || status !== 'ALL') && (
+          <div className="field">
+            <span className="field-label" aria-hidden="true">
+              &nbsp;
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setSearch('');
+                setStatus('ALL');
+                setPage(1);
+              }}
+            >
+              Clear filters
+            </Button>
+          </div>
+        )}
       </div>
 
       {rows.length === 0 ? (
-        <EmptyState title="No matching transactions" body="Adjust the search or status filter." />
+        <EmptyState
+          icon="search"
+          title="No matching transactions"
+          body="Adjust the search or status filter — nothing in the ledger matches."
+          action={
+            <Button
+              onClick={() => {
+                setSearch('');
+                setStatus('ALL');
+                setPage(1);
+              }}
+            >
+              Reset filters
+            </Button>
+          }
+        />
       ) : (
         <>
-          <p className="field-hint" role="status">
-            Showing {rows.length} of {total} matching transactions.
+          <p className="toolbar-count" role="status">
+            Showing {rows.length} of {total} matching transactions · Page {Math.min(page, totalPages)} of{' '}
+            {totalPages}
           </p>
           <div className="table-wrap">
             <table className="data">
@@ -170,7 +238,9 @@ export function TransactionsPage() {
                 <tr>
                   <th scope="col">Transaction</th>
                   <th scope="col">Payee</th>
-                  <th scope="col">Amount</th>
+                  <th scope="col" className="num">
+                    Amount
+                  </th>
                   <th scope="col">Status</th>
                   <th scope="col">Card</th>
                   <th scope="col">Date</th>
@@ -184,27 +254,27 @@ export function TransactionsPage() {
                         {txn.id.slice(0, 8)}…
                       </Link>
                     </td>
-                    <td>{txn.payeeName}</td>
-                    <td className="mono">{formatMoney(txn.amount, txn.currency)}</td>
+                    <td className="row-main">
+                      {txn.payeeName}
+                      {txn.payeeReference ? (
+                        <span className="sub-cell mono">{txn.payeeReference}</span>
+                      ) : null}
+                    </td>
+                    <td className="num amount">{formatMoney(txn.amount, txn.currency)}</td>
                     <td>
                       <Badge status={txn.status} />
                       {txn.declineReason ? (
-                        <span className="field-hint" style={{ display: 'block' }}>
-                          {txn.declineReason}
-                        </span>
+                        <span className="sub-cell">{txn.declineReason}</span>
                       ) : null}
                     </td>
                     <td className="mono">{txn.cardLastFour ? `…${txn.cardLastFour}` : '—'}</td>
-                    <td>{new Date(txn.createdAt).toLocaleString()}</td>
+                    <td style={{ whiteSpace: 'nowrap' }}>{formatDateTime(txn.createdAt)}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-          <nav
-            aria-label="Transaction pages"
-            style={{ display: 'flex', gap: 12, alignItems: 'center', marginTop: 12 }}
-          >
+          <nav className="pagination" aria-label="Transaction pages">
             <Button
               size="sm"
               disabled={page <= 1}
@@ -212,8 +282,8 @@ export function TransactionsPage() {
             >
               Previous
             </Button>
-            <span role="status">
-              Page {Math.min(page, totalPages)} of {totalPages}
+            <span className="pagination-status" role="status">
+              Page {Math.min(page, totalPages)} of {totalPages} · {total} records
             </span>
             <Button
               size="sm"

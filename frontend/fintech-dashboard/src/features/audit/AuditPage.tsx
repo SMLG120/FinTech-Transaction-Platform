@@ -8,6 +8,7 @@ import {
 } from '../../api/auditApi';
 import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
+import { PageHeader } from '../../components/ui/PageHeader';
 import { EmptyState, ErrorState, Skeleton } from '../../components/ui/states';
 import type { AuditRecord } from '../../types';
 
@@ -95,11 +96,11 @@ export function AuditPage() {
 
   return (
     <div>
-      <h1>Audit logs</h1>
-      <p className="field-hint">
-        Append-only by database trigger — an UPDATE or DELETE against the trail is refused, and the
-        API has no write endpoint. Actors appear as digests, never names.
-      </p>
+      <PageHeader
+        eyebrow="Risk & compliance"
+        title="Audit logs"
+        sub="Append-only by database trigger — actors appear as digests, never names."
+      />
 
       <section className="card" aria-labelledby="trail-heading" style={{ marginBottom: 16 }}>
         <h2 id="trail-heading" style={{ fontSize: '0.9rem' }}>

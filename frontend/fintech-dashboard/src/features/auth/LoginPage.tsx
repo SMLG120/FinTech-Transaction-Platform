@@ -1,9 +1,9 @@
 import { zodResolver } from '@hookform/resolvers/zod';
+import { AlertCircle, Lock } from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { z } from 'zod';
 import { Button } from '../../components/ui/Button';
-import { Card } from '../../components/ui/Card';
 import { useAuth } from './AuthContext';
 
 const schema = z.object({
@@ -36,10 +36,17 @@ export function LoginPage() {
 
   return (
     <div className="auth-wrap">
-      <Card>
-        <div className="auth-card">
-          <h1>Sign in</h1>
-          <p className="field-hint">
+      <div className="auth-card">
+        <div className="auth-brand">
+          <span className="auth-brand-mark" aria-hidden="true">
+            F$
+          </span>
+          <h1>Meridian Bank</h1>
+          <p>Secure FinTech Transaction Platform</p>
+        </div>
+        <div className="auth-panel">
+          <h2>Sign in</h2>
+          <p className="lede">
             Local development sign-in only — synthetic test identities, no real money.
           </p>
           <form onSubmit={(event) => void handleSubmit(onSubmit)(event)} noValidate>
@@ -58,7 +65,7 @@ export function LoginPage() {
               />
               {errors.email ? (
                 <p className="field-error" role="alert">
-                  {errors.email.message}
+                  <AlertCircle size={14} aria-hidden="true" /> {errors.email.message}
                 </p>
               ) : null}
             </div>
@@ -71,26 +78,35 @@ export function LoginPage() {
                 className="input"
                 type="password"
                 autoComplete="current-password"
+                placeholder="••••••••••"
                 aria-invalid={errors.password ? 'true' : 'false'}
                 {...register('password')}
               />
               {errors.password ? (
                 <p className="field-error" role="alert">
-                  {errors.password.message}
+                  <AlertCircle size={14} aria-hidden="true" /> {errors.password.message}
                 </p>
               ) : null}
             </div>
             {loginError ? (
-              <p className="field-error" role="alert">
-                {loginError}
-              </p>
+              <div className="alert alert-danger" role="alert">
+                <AlertCircle size={16} aria-hidden="true" />
+                <div>
+                  <strong>Sign-in failed</strong>
+                  <p>{loginError}</p>
+                </div>
+              </div>
             ) : null}
-            <Button variant="primary" type="submit" disabled={isLoading}>
-              {isLoading ? 'Signing in…' : 'Sign in'}
+            <Button variant="primary" type="submit" disabled={isLoading} className="btn-block">
+              {isLoading ? 'Signing in…' : 'Sign in securely'}
             </Button>
+            <p className="field-hint" style={{ marginTop: 12, display: 'flex', gap: 6, alignItems: 'center' }}>
+              <Lock size={13} aria-hidden="true" /> Session token lives in memory only — it dies
+              with the tab.
+            </p>
           </form>
         </div>
-      </Card>
+      </div>
     </div>
   );
 }

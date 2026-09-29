@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useCustomerProfile } from '../../api/customerApi';
 import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
+import { PageHeader } from '../../components/ui/PageHeader';
 import { EmptyState, ErrorState, Skeleton } from '../../components/ui/states';
 
 /**
@@ -15,7 +16,11 @@ export function CustomersPage() {
 
   return (
     <div>
-      <h1>Customers</h1>
+      <PageHeader
+        eyebrow="Operations"
+        title="Customers"
+        sub="Staff lookup. Profiles render masked unless the reader is the owner."
+      />
       <section className="card" aria-labelledby="lookup-heading" style={{ marginBottom: 16 }}>
         <h2 id="lookup-heading" style={{ fontSize: '0.9rem' }}>
           Look up a profile

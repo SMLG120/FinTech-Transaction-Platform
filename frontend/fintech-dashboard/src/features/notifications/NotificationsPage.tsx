@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { canRetry, useNotifications, useRetryNotification } from '../../api/notificationApi';
 import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
+import { PageHeader } from '../../components/ui/PageHeader';
 import { EmptyState, ErrorState, Skeleton } from '../../components/ui/states';
 import { useToast } from '../../components/ui/Toast';
 import { userMessage } from '../../utils/format';
@@ -28,12 +29,11 @@ export function NotificationsPage() {
 
   return (
     <div>
-      <h1>Notifications</h1>
-      <p className="field-hint">
-        Each consumed fact becomes exactly one message — push for a payment, SMS for a fraud
-        outcome worth acting on, email for a settlement period. An approved payment notifies
-        nobody: there is no human action in it.
-      </p>
+      <PageHeader
+        eyebrow="Operations"
+        title="Notifications"
+        sub="Delivery log: each consumed fact becomes exactly one message. An approved payment notifies nobody — there is no human action in it."
+      />
 
       <div className="field" style={{ maxWidth: 240 }}>
         <label className="field-label" htmlFor="notif-status">

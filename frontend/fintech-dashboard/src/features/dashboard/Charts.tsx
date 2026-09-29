@@ -11,9 +11,10 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
+import { CardHeader, Card } from '../../components/ui/Card';
 import type { DayBucket } from './stats';
 
-const PIE_COLORS = ['#047857', '#b42318', '#5b6b7f', '#92400e'];
+const PIE_COLORS = ['#046c4e', '#b42318', '#175cd3', '#8a4a08'];
 
 export interface Slice {
   name: string;
@@ -24,52 +25,64 @@ export interface Slice {
  * dependency and only the dashboard needs it. Loaded via React.lazy. */
 export default function Charts({ daily, slices }: { daily: DayBucket[]; slices: Slice[] }) {
   return (
-    <div
-      style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
-        gap: 16,
-        marginBottom: 24,
-      }}
-    >
-      <section className="card" aria-labelledby="txn-over-time">
-        <h2 id="txn-over-time" style={{ fontSize: '0.9rem' }}>
-          Transactions — last 14 days
-        </h2>
+    <div className="grid-2" role="group" aria-label="Transaction charts">
+      <Card labelledBy="txn-over-time">
+        <CardHeader
+          titleId="txn-over-time"
+          title="Transactions — last 14 days"
+          sub="Daily approvals, declines, and other outcomes"
+        />
         <div style={{ height: 260 }}>
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={daily} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#dfe4ec" />
-              <XAxis dataKey="day" tick={{ fontSize: 11 }} />
-              <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
-              <Tooltip />
-              <Legend wrapperStyle={{ fontSize: 12 }} />
-              <Bar dataKey="approved" name="Approved" stackId="a" fill="#047857" />
+            <BarChart data={daily} margin={{ top: 8, right: 8, left: -12, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e3e8ef" vertical={false} />
+              <XAxis dataKey="day" tick={{ fontSize: 11, fill: '#55677d' }} tickLine={false} axisLine={{ stroke: '#dfe4ec' }} />
+              <YAxis allowDecimals={false} tick={{ fontSize: 11, fill: '#55677d' }} tickLine={false} axisLine={false} />
+              <Tooltip
+                contentStyle={{ borderRadius: 8, border: '1px solid #dfe4ec', fontSize: 12 }}
+              />
+              <Legend wrapperStyle={{ fontSize: 12 }} iconType="circle" iconSize={8} />
+              <Bar dataKey="approved" name="Approved" stackId="a" fill="#046c4e" radius={[0, 0, 0, 0]} />
               <Bar dataKey="declined" name="Declined" stackId="a" fill="#b42318" />
-              <Bar dataKey="other" name="Other" stackId="a" fill="#8595a9" />
+              <Bar dataKey="other" name="Other" stackId="a" fill="#8fa1ba" radius={[3, 3, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>
-      </section>
+      </Card>
 
-      <section className="card" aria-labelledby="approval-mix">
-        <h2 id="approval-mix" style={{ fontSize: '0.9rem' }}>
-          Outcome mix
-        </h2>
+      <Card labelledBy="approval-mix">
+        <CardHeader
+          titleId="approval-mix"
+          title="Outcome mix"
+          sub="Share of decided vs. pending payments"
+        />
         <div style={{ height: 260 }}>
           <ResponsiveContainer width="100%" height="100%">
             <PieChart>
-              <Pie data={slices} dataKey="value" nameKey="name" outerRadius={90} label>
+              <Pie
+                data={slices}
+                dataKey="value"
+                nameKey="name"
+                outerRadius={88}
+                innerRadius={52}
+                paddingAngle={2}
+                label={{ fontSize: 11 }}
+              >
                 {slices.map((entry, index) => (
-                  <Cell key={entry.name} fill={PIE_COLORS[index % PIE_COLORS.length]} />
+                  <Cell
+                    key={entry.name}
+                    fill={PIE_COLORS[index % PIE_COLORS.length]}
+                    stroke="#fff"
+                    strokeWidth={2}
+                  />
                 ))}
               </Pie>
-              <Tooltip />
-              <Legend wrapperStyle={{ fontSize: 12 }} />
+              <Tooltip contentStyle={{ borderRadius: 8, border: '1px solid #dfe4ec', fontSize: 12 }} />
+              <Legend wrapperStyle={{ fontSize: 12 }} iconType="circle" iconSize={8} />
             </PieChart>
           </ResponsiveContainer>
         </div>
-      </section>
+      </Card>
     </div>
   );
 }

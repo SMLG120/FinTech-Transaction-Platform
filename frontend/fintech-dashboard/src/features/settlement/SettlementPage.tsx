@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { useBreaks, useCycles } from '../../api/settlementApi';
 import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
+import { PageHeader } from '../../components/ui/PageHeader';
 import { EmptyState, ErrorState, Skeleton } from '../../components/ui/states';
 import { formatMoney } from '../../utils/format';
 
@@ -17,12 +18,11 @@ export function SettlementPage() {
 
   return (
     <div>
-      <h1>Settlement</h1>
-      <p className="field-hint">
-        Counted from the events, closed, given out, then compared with a figure from outside — a
-        system that reconciles its own arithmetic against itself has checked nothing. A statement
-        that has been given out cannot be edited.
-      </p>
+      <PageHeader
+        eyebrow="Risk & compliance"
+        title="Settlement"
+        sub="Counted from the events, closed, given out, then compared with a figure from outside — a system that reconciles its own arithmetic against itself has checked nothing."
+      />
 
       <section className="card" aria-labelledby="cycles-heading" style={{ marginBottom: 16 }}>
         <h2 id="cycles-heading" style={{ fontSize: '0.9rem' }}>

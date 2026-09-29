@@ -6,6 +6,7 @@ import { openDispute, useDisputes } from '../../api/disputeApi';
 import { useTransactions } from '../../api/transactionApi';
 import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
+import { PageHeader } from '../../components/ui/PageHeader';
 import { EmptyState, ErrorState, Skeleton } from '../../components/ui/states';
 import { useToast } from '../../components/ui/Toast';
 import { userMessage } from '../../utils/format';
@@ -47,7 +48,11 @@ export function DisputesPage() {
 
   return (
     <div>
-      <h1>Disputes</h1>
+      <PageHeader
+        eyebrow="Money"
+        title="Disputes"
+        sub="Chargeback-style cases on settled payments. Staff see the queue; customers see their own cases."
+      />
 
       {canOpen ? (
         <section className="card" aria-labelledby="open-heading" style={{ marginBottom: 16 }}>

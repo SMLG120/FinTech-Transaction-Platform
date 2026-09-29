@@ -2,17 +2,17 @@
 
 An event-driven payment platform built as a set of independently deployable Spring Boot services.
 
-This repository is being built in sixteen phases. **Phases 1 through 11 are complete**: ten service
+This repository was built in sixteen phases, and **all sixteen are complete**: ten service
 skeletons, local infrastructure, observability wiring and build pipeline are in place, and the
 platform now carries a payment from authorisation through fraud scoring to a period statement that is
 reconciled against a bank figure and cannot be edited once it has been given out — tells the
 customer and the operator about each step, records who did what in a trail nobody can edit, takes
 money back when a chargeback case says so, and shows it all in a browser: the static customer UI
 in `web/` plus a React + TypeScript dashboard in `frontend/fintech-dashboard/` covering every
-role. **Phase 12 (contract and integration testing) is in progress**; see the phase list below
-for what is established and what is rollout. What is not
-built
-yet is stated in the phase list below rather than left to be discovered.
+role behind an enterprise design system (shared tokens and primitives, grouped role-aware
+navigation, dashboard balance hero, and consistent loading/empty/error states). The phase list
+below records what each phase established. What is not built yet is stated in the phase list
+rather than left to be discovered.
 
 > **No real payment network, no real card numbers, no real money.** Every card number, token and
 > identity in this repository is synthetic test data. Card data is tokenised at the edge and the
@@ -40,6 +40,7 @@ make ps
 | --- | --- |
 | Gateway | http://localhost:8080 |
 | Web UI | http://localhost:3001 |
+| React dashboard (dev, `npm run dev` in `frontend/fintech-dashboard/`) | http://localhost:5173 |
 | Kafka UI | http://localhost:8081 |
 | Keycloak | http://localhost:8180 |
 | Prometheus | http://localhost:9090 |
@@ -349,7 +350,11 @@ method. Design in [ADR-0013](docs/decisions/0013-static-customer-ui.md).
 
 For staff views and the full dashboard, `frontend/fintech-dashboard/` is a React + TypeScript
 application covering every role (analyst queue, audit trail, settlement, notifications) against
-the same gateway APIs — see its README. The static UI above remains the customer surface the
+the same gateway APIs — see its README. It shares one design system (CSS tokens plus
+`components/ui` primitives: page headers, stat cards, toolbar, alerts, timeline, modal, and
+table/loading/empty/error states), groups navigation by Overview / Money / Risk & Compliance /
+Operations with the sidebar limited to the caller's roles, and leads with a dashboard balance
+hero plus a security-watch panel. The static UI above remains the customer surface the
 verify script checks.
 
 ### How a request is authenticated

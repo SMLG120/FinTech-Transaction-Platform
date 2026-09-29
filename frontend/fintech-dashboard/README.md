@@ -115,14 +115,14 @@ Local test logins: `customer@`, `agent@`, `auditor@`, `compliance@`,
 | Path | Who | What |
 | --- | --- | --- |
 | `/login` | public | Sign in (RHF+Zod) |
-| `/` | all | Dashboard: stats, lazy charts, recent activity |
-| `/transactions`, `/transactions/:id` | all | Search/filter/sort/paginate + investigation (timeline, risk decision, audit trail, messages) |
-| `/cards` | all | Issue (number shown once), freeze/unfreeze/lost/close |
-| `/pay` | customer, support, admin | Fund + pay forms; authorise→settle kept explicit |
+| `/` | all | Dashboard: balance hero, icon stat cards, lazy charts, recent activity, security watch |
+| `/transactions`, `/transactions/:id` | all | Toolbar (search/filter/sort/clear) + paginated ledger; investigation (summary, lifecycle timeline, risk decision, audit trail, messages) |
+| `/cards` | all | Visual card previews, issue (number shown once), freeze/unfreeze/lost/close with modal confirm |
+| `/pay` | customer, support, admin | Fund + pay forms; live payment summary; authorise→settle kept explicit |
 | `/profile` | customer, support, admin | Own profile, KYC history, update, irreversible erasure |
 | `/customers` | support, admin | Masked profile lookup |
 | `/disputes`, `/disputes/:id` | customer, support, admin | Open (settled own payments), plead, staff refund/reject |
-| `/fraud`, `/fraud/alerts/:id` | analyst, compliance, auditor, admin | Queue, claim/close (analyst+admin), overrule/re-score |
+| `/fraud`, `/fraud/alerts/:id` | analyst, compliance, auditor, admin | SLA callout, risk-meter queue, claim/close (analyst+admin), overrule/re-score |
 | `/audit` | auditor, compliance, admin | Trail + correlation/transaction/resource lookups |
 | `/settlement`, `/settlement/cycles/:ref` | settlement, compliance, auditor, admin | Periods, statements, actuals, breaks |
 | `/notifications`, `/notifications/:id` | support, admin | Delivery log + retry (FAILED only) |
@@ -136,15 +136,31 @@ Role lists mirror `GatewaySecurityConfiguration` and each service's
 src/
   api/          client.ts (sole fetch owner) + per-service hooks
   types/        backend-mirroring DTOs
-  components/ui Button, Card/StatCard, Badge, states (Skeleton/Empty/Error),
-                Toast (aria-live), FieldError patterns
-  layouts/      AppShell (sidebar + topbar + Outlet, collapsible <900px)
+  components/ui Button, Card/StatCard/CardHeader, Badge, PageHeader/Breadcrumbs,
+                states (Skeleton/TableSkeleton/Empty/Error), Toast (aria-live),
+                FieldError patterns
+  layouts/      AppShell (grouped sections, active indicator, user chip +
+                sign-out, collapsible <900px) + Outlet
   routes/       AppRoutes + RequireAuth/RequireRole
   features/     auth, dashboard (+stats, lazy Charts), transactions,
                 cards, payments (schemas), customers, disputes, fraud
-                (DecisionPanel shared), audit, settlement, notifications
+                (DecisionPanel + RiskMeter shared), audit, settlement,
+                notifications
   utils/        formatMoney, userMessage (status → friendly text + ref id)
 ```
+
+## Design system
+
+`src/index.css` owns every token and pattern — no page-level styling
+decisions. Colours (single navy/blue accent, status softs that always pair
+with a text label), type scale, spacing, radii, and shadows are variables;
+pages compose `page-head` (eyebrow/title/sub/actions), `toolbar`,
+`table-wrap` + `table.data` (sticky headers, tabular numerals), `alert`
+(info/success/warning/danger with icon + text), `spec` definition lists,
+`timeline`, `modal`, `hero`, and the shared state blocks. Charts use the
+same status palette as the badges. Breakpoints at 1100/900/560px reorganise
+(hero stacks, toolbar fields go full-width, tables scroll) rather than
+shrinking the desktop layout.
 
 Every API-driven view has loading / skeleton / empty / error / retry
 states. Status badges pair text with color (never color alone). Focus is
