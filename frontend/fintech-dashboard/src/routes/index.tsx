@@ -1,5 +1,6 @@
 import { Route, Routes } from 'react-router-dom';
 import { LoginPage } from '../features/auth/LoginPage';
+import { RegistrationPage } from '../features/auth/RegistrationPage';
 import { CardsPage } from '../features/cards/CardsPage';
 import { CustomersPage } from '../features/customers/CustomersPage';
 import { ProfilePage } from '../features/customers/ProfilePage';
@@ -26,6 +27,7 @@ export function AppRoutes() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/register" element={<RegistrationPage />} />
       <Route
         element={
           <RequireAuth>

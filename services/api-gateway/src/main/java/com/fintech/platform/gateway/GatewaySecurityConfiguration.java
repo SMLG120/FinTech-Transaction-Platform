@@ -172,6 +172,8 @@ class GatewaySecurityConfiguration {
                         // is still authenticated below. This rule is first because it must be.
                         .pathMatchers(HttpMethod.OPTIONS, "/**")
                         .permitAll()
+                        .pathMatchers(HttpMethod.POST, "/register")
+                        .permitAll()
                         .pathMatchers(OPERATIONAL_ENDPOINTS)
                         .permitAll()
 

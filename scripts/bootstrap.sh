@@ -70,7 +70,7 @@ if [[ -f "${ENV_FILE}" && ${FORCE} -eq 0 ]]; then
   # instead: a key is appended only if the file does not already have it, and nothing existing is
   # ever rewritten. A key that is present is left exactly as it is.
   backfilled=0
-  for name in CUSTOMER_PII_MASTER_KEY CARD_TOKENISATION_KEY SUBJECT_DIGEST_KEY; do
+  for name in CUSTOMER_PII_MASTER_KEY CARD_TOKENISATION_KEY SUBJECT_DIGEST_KEY KEYCLOAK_ADMIN_CLIENT_SECRET; do
     if ! grep -q "^${name}=" "${ENV_FILE}"; then
       echo "adding ${name}, which this .env predates"
       case "${name}" in
@@ -88,6 +88,7 @@ if [[ -f "${ENV_FILE}" && ${FORCE} -eq 0 ]]; then
         # key does not invalidate stored digests, but it does orphan every account and payment row
         # already written under the old one, so rotate it before there are any.
         SUBJECT_DIGEST_KEY) value="$(random_base64 32)" ;;
+        KEYCLOAK_ADMIN_CLIENT_SECRET) value="$(random_hex 32)" ;;
         # Any future generated secret MUST get a case here. The default arm exits rather than
         # inventing a value, because a key generated with the wrong length fails at service startup
         # and a key generated with the wrong derivation silently works while protecting nothing.
@@ -112,6 +113,7 @@ REDIS_PASSWORD_VALUE="$(random_hex 32)"
 KEYCLOAK_ADMIN_PASSWORD_VALUE="$(random_hex 24)"
 POSTGRES_SUPERUSER_PASSWORD_VALUE="$(random_hex 32)"
 GRAFANA_ADMIN_PASSWORD_VALUE="$(random_hex 24)"
+KEYCLOAK_ADMIN_CLIENT_SECRET_VALUE="$(random_hex 32)"
 INTERNAL_IDENTITY_SIGNING_KEY_VALUE="$(random_hex 32)"
 CUSTOMER_PII_MASTER_KEY_VALUE="$(random_base64 32)"
 
@@ -123,6 +125,7 @@ sed \
   -e "s|^GRAFANA_ADMIN_PASSWORD=.*|GRAFANA_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD_VALUE}|" \
   -e "s|^INTERNAL_IDENTITY_SIGNING_KEY=.*|INTERNAL_IDENTITY_SIGNING_KEY=${INTERNAL_IDENTITY_SIGNING_KEY_VALUE}|" \
   -e "s|^CUSTOMER_PII_MASTER_KEY=.*|CUSTOMER_PII_MASTER_KEY=${CUSTOMER_PII_MASTER_KEY_VALUE}|" \
+  -e "s|^KEYCLOAK_ADMIN_CLIENT_SECRET=.*|KEYCLOAK_ADMIN_CLIENT_SECRET=${KEYCLOAK_ADMIN_CLIENT_SECRET_VALUE}|" \
   "${EXAMPLE_FILE}" >"${ENV_FILE}"
 
 chmod 600 "${ENV_FILE}"

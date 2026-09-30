@@ -9,6 +9,27 @@ export interface ApiConfig {
   gatewayBaseUrl: string;
 }
 
+export interface RegistrationRequest {
+  fullName: string;
+  dateOfBirth: string;
+  nationality: string;
+  email: string;
+  password: string;
+  phone?: string;
+  address: {
+    line1: string;
+    line2?: string;
+    city: string;
+    postalCode: string;
+    country: string;
+  };
+}
+
+export interface RegistrationResponse {
+  customerId: string;
+  message: string;
+}
+
 export interface ParsedApiError {
   status: number;
   code: string;
@@ -120,6 +141,17 @@ export class ApiClient {
     const data = await safeJson(response);
     if (!response.ok) throw new ApiError(parseError(response.status, data));
     return data as T;
+  }
+
+  async register(body: RegistrationRequest): Promise<RegistrationResponse> {
+    const response = await fetch(`${this.config.gatewayBaseUrl}/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Correlation-Id': newId() },
+      body: JSON.stringify(body),
+    });
+    const data = await safeJson(response);
+    if (!response.ok) throw new ApiError(parseError(response.status, data));
+    return data as RegistrationResponse;
   }
 
   get<T>(path: string): Promise<T> {

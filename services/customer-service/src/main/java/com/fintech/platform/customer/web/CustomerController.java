@@ -37,6 +37,9 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/v1/customers")
 public class CustomerController {
 
+    private static final String AUTH_SERVICE_SUBJECT = "auth-service";
+    private static final String AUTH_SERVICE_USERNAME = "auth-service";
+
     private final CustomerService customerService;
     private final KycService kycService;
     private final CurrentCaller caller;
@@ -54,6 +57,19 @@ public class CustomerController {
         CustomerProfileView view = customerService.register(caller.require(), request.toIdentity(), request.phone());
         return ResponseEntity.created(URI.create("/api/v1/customers/" + view.id()))
                 .body(toResponse(view));
+    }
+
+    /** Internal-only profile provisioning for Auth Service after Keycloak user creation. */
+    @PostMapping("/internal/provision")
+    public ResponseEntity<CustomerDtos.CustomerResponse> provision(
+            @Valid @RequestBody CustomerDtos.ProvisionRequest request) {
+        InternalIdentity internal = caller.require();
+        if (!AUTH_SERVICE_SUBJECT.equals(internal.subject())
+                || !AUTH_SERVICE_USERNAME.equals(internal.username())) {
+            throw com.fintech.platform.customer.error.CustomerErrorCodes.NOT_THE_OWNER.exception();
+        }
+        CustomerProfileView view = customerService.provision(request.keycloakSubject(), request.toIdentity(), request.phone());
+        return ResponseEntity.status(201).body(toResponse(view));
     }
 
     /**
