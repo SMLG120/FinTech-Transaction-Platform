@@ -439,6 +439,7 @@ services:
       KEYCLOAK_ISSUER: ${KEYCLOAK_ISSUER:-http://localhost:8180/realms/fintech}
       KEYCLOAK_JWK_SET_URI: http://keycloak:8180/realms/fintech/protocol/openid-connect/certs
       KEYCLOAK_API_AUDIENCE: ${KEYCLOAK_API_AUDIENCE:-fintech-api}
+      AUTH_SERVICE_URL: http://auth-service:8081
       # Where /api/v1/customers is forwarded. The service name, not the published port: the gateway
       # is inside the Compose network, and 9082 is bound to the host's loopback only.
       CUSTOMER_SERVICE_URL: http://customer-service:8082
@@ -498,6 +499,9 @@ services:
       # Each service authenticates as its own role, so a compromise of one service cannot read
       # another service's tables. The role is created by the Postgres init script.
       SERVICE_DB_USERNAME: fintech_auth
+      KEYCLOAK_ADMIN_BASE_URL: http://keycloak:8180
+      KEYCLOAK_ADMIN_CLIENT_ID: ${KEYCLOAK_ADMIN_CLIENT_ID:-fintech-registration}
+      KEYCLOAK_ADMIN_CLIENT_SECRET: ${KEYCLOAK_ADMIN_CLIENT_SECRET:?run ./scripts/bootstrap.sh to create .env}
     ports:
       - "127.0.0.1:9081:8081"
     depends_on:

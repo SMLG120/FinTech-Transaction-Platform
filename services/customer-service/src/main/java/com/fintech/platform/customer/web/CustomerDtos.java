@@ -70,6 +70,27 @@ public final class CustomerDtos {
         }
     }
 
+    /** Internal Auth Service provisioning request. No role or caller identity is client-selectable. */
+    public record ProvisionRequest(
+            @NotBlank @Size(max = 512) String keycloakSubject,
+            @NotBlank @Size(max = 200) String fullName,
+            @NotNull @Past LocalDate dateOfBirth,
+            @NotBlank @Size(min = 2, max = 2) @Pattern(regexp = "[A-Za-z]{2}") String nationality,
+            @NotBlank @Email @Size(max = 320) String email,
+            @Size(max = 32) String phone,
+            @NotNull @Valid AddressRequest address) {
+
+        public CustomerIdentity toIdentity() {
+            return new CustomerIdentity(
+                    new CustomerIdentity.ClaimedName(fullName),
+                    new CustomerIdentity.DateOfBirth(
+                            dateOfBirth, CustomerIdentity.Nationality.fromCountryCode(nationality)),
+                    new CustomerIdentity.Email(email),
+                    address.toDomain(),
+                    CustomerIdentity.IdentityDocument.unsubmitted());
+        }
+    }
+
     /** Full profile replacement. Same shape as registration; see {@code CustomerService#updateProfile}. */
     public record UpdateProfileRequest(
             @NotBlank @Size(max = 200) String fullName,

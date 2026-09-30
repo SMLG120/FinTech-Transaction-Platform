@@ -1,7 +1,7 @@
 import { zodResolver } from '@hookform/resolvers/zod';
 import { AlertCircle, Lock } from 'lucide-react';
 import { useForm } from 'react-hook-form';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { z } from 'zod';
 import { Button } from '../../components/ui/Button';
 import { useAuth } from './AuthContext';
@@ -18,6 +18,7 @@ export function LoginPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const from = (location.state as { from?: string } | null)?.from ?? '/';
+  const registrationComplete = (location.state as { registrationComplete?: boolean } | null)?.registrationComplete;
 
   const {
     register,
@@ -97,9 +98,11 @@ export function LoginPage() {
                 </div>
               </div>
             ) : null}
+            {registrationComplete ? <div className="alert alert-success" role="status">Account created. Sign in to continue.</div> : null}
             <Button variant="primary" type="submit" disabled={isLoading} className="btn-block">
               {isLoading ? 'Signing in…' : 'Sign in securely'}
             </Button>
+            <p className="field-hint" style={{ marginTop: 12 }}>New customer? <Link to="/register">Create an account</Link></p>
             <p className="field-hint" style={{ marginTop: 12, display: 'flex', gap: 6, alignItems: 'center' }}>
               <Lock size={13} aria-hidden="true" /> Session token lives in memory only — it dies
               with the tab.

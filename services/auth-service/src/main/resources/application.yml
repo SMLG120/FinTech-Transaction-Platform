@@ -147,9 +147,20 @@ app:
 # as this property, so the mapping is written out. No default: a service that starts without the key
 # must fail to register the verification filter loudly rather than run while trusting unsigned headers.
 platform:
+  keycloak:
+    admin:
+      # Dedicated confidential client with only realm-management user/role permissions.
+      base-url: ${KEYCLOAK_ADMIN_BASE_URL:http://localhost:8180}
+      realm: ${KEYCLOAK_REALM:fintech}
+      client-id: ${KEYCLOAK_ADMIN_CLIENT_ID:fintech-registration}
+      client-secret: ${KEYCLOAK_ADMIN_CLIENT_SECRET}
+  customer-service:
+    base-url: ${CUSTOMER_SERVICE_URL:http://localhost:8082}
+    timeout-ms: ${CUSTOMER_SERVICE_TIMEOUT_MS:2000}
   security:
     internal-identity:
       signing-key: ${INTERNAL_IDENTITY_SIGNING_KEY:}
+      excluded-paths: [/actuator/health, /actuator/health/**, /actuator/info, /actuator/prometheus, /register]
       # How long a signed identity is honoured after the gateway issued it. Bounds the window in which
       # a role revoked a moment ago is still accepted; it does not eliminate replay.
       max-age-seconds: ${INTERNAL_IDENTITY_MAX_AGE_SECONDS:60}

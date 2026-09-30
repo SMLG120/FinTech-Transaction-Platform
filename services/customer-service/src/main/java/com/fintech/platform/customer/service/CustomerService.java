@@ -68,6 +68,18 @@ public class CustomerService {
         return toView(customer, false);
     }
 
+    /** Creates a profile for the subject provisioned by the trusted Auth Service. */
+    @Transactional
+    public CustomerProfileView provision(String subject, CustomerIdentity identity, String phone) {
+        if (customers.findBySubject(subject).isPresent()
+                || customers.findBySubjectDigest(cipher.subjectDigest(subject)).isPresent()) {
+            throw CustomerErrorCodes.CUSTOMER_ALREADY_REGISTERED.exception();
+        }
+        Customer customer = Customer.register(UUID.randomUUID(), subject, identity, phone, cipher, clock.instant());
+        customers.save(customer);
+        return toView(customer, false);
+    }
+
     /**
      * @throws ApiException 404 if no profile exists for the subject, 410 if it has been erased
      */

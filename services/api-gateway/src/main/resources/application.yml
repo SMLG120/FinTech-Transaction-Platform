@@ -61,6 +61,12 @@ spring:
       # a particular profile is the service's question, and answering it here would mean a second,
       # inconsistent implementation of the same rule.
       routes:
+        - id: auth-registration
+          uri: ${AUTH_SERVICE_URL:http://localhost:8081}
+          predicates:
+            - Path=/register
+            - Method=POST
+
         - id: customer-service
           uri: ${CUSTOMER_SERVICE_URL:http://localhost:8082}
           predicates:

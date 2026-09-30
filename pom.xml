@@ -64,6 +64,14 @@
     <resilience4j.version>2.2.0</resilience4j.version>
     <testcontainers.version>1.21.4</testcontainers.version>
     <palantir-java-format.version>2.99.0</palantir-java-format.version>
+    <postgresql.version>42.7.13</postgresql.version>
+    <kafka.version>3.9.2</kafka.version>
+    <spring-framework.version>6.2.18</spring-framework.version>
+    <micrometer.version>1.16.7</micrometer.version>
+    <jackson.version>2.22.3</jackson.version>
+    <jackson.annotations.version>2.22</jackson.annotations.version>
+    <tomcat.version>10.1.48</tomcat.version>
+    <netty.version>4.1.127.Final</netty.version>
 
     <!-- Build plugins -->
     <maven-enforcer-plugin.version>3.6.3</maven-enforcer-plugin.version>
@@ -89,6 +97,51 @@
         <version>${spring-cloud.version}</version>
         <type>pom</type>
         <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.postgresql</groupId>
+        <artifactId>postgresql</artifactId>
+        <version>${postgresql.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.kafka</groupId>
+        <artifactId>kafka-clients</artifactId>
+        <version>${kafka.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.springframework</groupId>
+        <artifactId>spring-webmvc</artifactId>
+        <version>${spring-framework.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.micrometer</groupId>
+        <artifactId>micrometer-core</artifactId>
+        <version>${micrometer.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-databind</artifactId>
+        <version>${jackson.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-core</artifactId>
+        <version>${jackson.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-annotations</artifactId>
+        <version>${jackson.annotations.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.tomcat.embed</groupId>
+        <artifactId>tomcat-embed-core</artifactId>
+        <version>${tomcat.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.netty</groupId>
+        <artifactId>netty-handler</artifactId>
+        <version>${netty.version}</version>
       </dependency>
 
       <dependency>
@@ -190,6 +243,7 @@
       <plugin>
         <groupId>org.jacoco</groupId>
         <artifactId>jacoco-maven-plugin</artifactId>
+        <version>${jacoco-maven-plugin.version}</version>
         <executions>
           <execution>
             <id>prepare-agent</id>
