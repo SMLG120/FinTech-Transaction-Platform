@@ -113,7 +113,9 @@ public class VelocityCounter {
             }
             return VelocitySample.of(count.intValue(), windowSeconds);
         } catch (RuntimeException e) {
-            log.warn("Velocity counter unavailable; continuing without a velocity signal: {}", e.toString());
+            log.warn(
+                    "Velocity counter unavailable; continuing without a velocity signal (exception type {})",
+                    e.getClass().getSimpleName());
             return VelocitySample.unavailable(windowSeconds);
         }
     }

@@ -42,7 +42,7 @@ INFRASTRUCTURE_SECRETS = {
 }
 
 # Secrets an application container may legitimately hold.
-APPLICATION_SECRETS = {"SERVICE_DB_PASSWORD", "REDIS_PASSWORD"}
+APPLICATION_SECRETS = {"SERVICE_DB_PASSWORD", "REDIS_PASSWORD", "KEYCLOAK_ADMIN_CLIENT_SECRET"}
 
 # Services that talk to no database at all, so must not be given database configuration.
 NO_DATABASE = {"api-gateway"}
@@ -74,6 +74,11 @@ for name in sorted(APPLICATION_SERVICES):
     leaked = keys & INFRASTRUCTURE_SECRETS
     if leaked:
         problems.append(f"{name} receives infrastructure secrets: {sorted(leaked)}")
+
+    if "KEYCLOAK_ADMIN_CLIENT_SECRET" in keys and name != "auth-service":
+        problems.append(f"{name} receives the auth-service Keycloak client secret")
+    if name == "auth-service" and "KEYCLOAK_ADMIN_CLIENT_SECRET" not in keys:
+        problems.append("auth-service is missing KEYCLOAK_ADMIN_CLIENT_SECRET")
 
     unexpected_secrets = {k for k in keys if ("PASSWORD" in k or "SECRET" in k) and k not in APPLICATION_SECRETS}
     if unexpected_secrets:

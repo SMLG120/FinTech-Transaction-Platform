@@ -3,6 +3,7 @@ package com.fintech.platform.transaction.web;
 import com.fintech.platform.common.correlation.CorrelationId;
 import com.fintech.platform.common.error.ApiErrorResponse;
 import com.fintech.platform.common.identity.CurrentCaller;
+import com.fintech.platform.common.identity.InternalIdentity;
 import com.fintech.platform.transaction.domain.FraudContext;
 import com.fintech.platform.transaction.domain.PaymentChannel;
 import com.fintech.platform.transaction.error.TransactionErrorCodes;
@@ -21,7 +22,6 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.ModelAttribute;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -56,13 +56,22 @@ public class TransactionController {
     private final PaymentFacade payments;
     private final CurrentCaller caller;
     private final SubjectDigester digester;
+    private final TransactionAuthorization authorization;
+    private final com.fintech.platform.transaction.config.PaymentProperties paymentProperties;
 
     public TransactionController(
-            TransactionService transactions, PaymentFacade payments, CurrentCaller caller, SubjectDigester digester) {
+            TransactionService transactions,
+            PaymentFacade payments,
+            CurrentCaller caller,
+            SubjectDigester digester,
+            TransactionAuthorization authorization,
+            com.fintech.platform.transaction.config.PaymentProperties paymentProperties) {
         this.transactions = transactions;
         this.payments = payments;
         this.caller = caller;
         this.digester = digester;
+        this.authorization = authorization;
+        this.paymentProperties = paymentProperties;
     }
 
     /**
@@ -73,33 +82,37 @@ public class TransactionController {
      * a success.
      */
     @PostMapping("/transactions")
-    @PreAuthorize("hasAnyRole('CUSTOMER', 'ADMIN', 'SUPPORT', 'OPERATIONS')")
     public ResponseEntity<?> create(
             @Valid @RequestBody CreateTransactionRequest body,
             @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
             HttpServletRequest request) {
 
+        InternalIdentity identity = caller.require();
+        authorization.requireMoneyMovement(identity);
         String fingerprint = com.fintech.platform.transaction.service.IdempotencyService.fingerprint(
                 body.canonicalFingerprint("POST", "/api/v1/transactions"));
 
         return render(
-                payments.createPayment(ownerDigest(), idempotencyKey, fingerprint, body, fraudContext(body, request)),
+                payments.createPayment(
+                        ownerDigest(identity), idempotencyKey, fingerprint, body, fraudContext(body, request)),
                 transactionId -> "/api/v1/transactions/" + transactionId,
                 request);
     }
 
     /** One payment, if the caller owns it. */
     @GetMapping("/transactions/{id}")
-    @PreAuthorize("hasAnyRole('CUSTOMER', 'ADMIN', 'SUPPORT', 'OPERATIONS')")
     public TransactionResponse get(@PathVariable UUID id) {
-        return TransactionResponse.from(transactions.get(id, ownerDigest()));
+        InternalIdentity identity = caller.require();
+        authorization.requireRead(identity);
+        return TransactionResponse.from(transactions.get(id, ownerDigest(identity)));
     }
 
     /** The caller's payments, newest first. */
     @GetMapping("/transactions")
-    @PreAuthorize("hasAnyRole('CUSTOMER', 'ADMIN', 'SUPPORT', 'OPERATIONS')")
     public Map<String, Object> list(@RequestParam(defaultValue = "20") int limit) {
-        List<TransactionResponse> items = transactions.list(ownerDigest(), limit).stream()
+        InternalIdentity identity = caller.require();
+        authorization.requireRead(identity);
+        List<TransactionResponse> items = transactions.list(ownerDigest(identity), limit).stream()
                 .map(TransactionResponse::from)
                 .toList();
         Map<String, Object> body = new LinkedHashMap<>();
@@ -117,9 +130,10 @@ public class TransactionController {
      * already prevents, and the 409 it produces says the more useful thing — that it is already settled.
      */
     @PostMapping("/transactions/{id}/settle")
-    @PreAuthorize("hasAnyRole('CUSTOMER', 'ADMIN', 'OPERATIONS')")
     public TransactionResponse settle(@PathVariable UUID id) {
-        return TransactionResponse.from(transactions.settle(id, ownerDigest()));
+        InternalIdentity identity = caller.require();
+        authorization.requireMoneyMovement(identity);
+        return TransactionResponse.from(transactions.settle(id, ownerDigest(identity)));
     }
 
     /**
@@ -128,17 +142,25 @@ public class TransactionController {
      * <p>Not keyed, for the same reason as settle. The state machine makes a second reversal a 409.
      */
     @PostMapping("/transactions/{id}/reverse")
-    @PreAuthorize("hasAnyRole('CUSTOMER', 'ADMIN', 'OPERATIONS')")
     public TransactionResponse reverse(@PathVariable UUID id) {
-        return TransactionResponse.from(transactions.reverse(id, ownerDigest()));
+        InternalIdentity identity = caller.require();
+        authorization.requireMoneyMovement(identity);
+        return TransactionResponse.from(transactions.reverseRequestedByPayer(id, ownerDigest(identity)));
     }
 
     /** The caller's spendable and held balances in a currency. */
     @GetMapping("/accounts/balance")
-    @PreAuthorize("hasAnyRole('CUSTOMER', 'ADMIN', 'SUPPORT', 'OPERATIONS')")
     public Map<String, Object> balance(@RequestParam(required = false, defaultValue = "GBP") String currency) {
-        Currency code = Currency.getInstance(currency.toUpperCase(Locale.ROOT));
-        var balances = transactions.balances(ownerDigest(), code);
+        InternalIdentity identity = caller.require();
+        authorization.requireRead(identity);
+        Currency code;
+        try {
+            code = Currency.getInstance(currency.toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException unknown) {
+            throw com.fintech.platform.common.error.CommonErrorCodes.VALIDATION_ERROR.exception(
+                    "currency must be an ISO 4217 code");
+        }
+        var balances = transactions.balances(ownerDigest(identity), code);
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("currency", code.getCurrencyCode());
         body.put(
@@ -158,12 +180,18 @@ public class TransactionController {
      * <p>Idempotency-keyed, because it moves money and a double top-up is as wrong as a double payment.
      */
     @PostMapping("/accounts/fund")
-    @PreAuthorize("hasAnyRole('CUSTOMER', 'ADMIN', 'OPERATIONS')")
     public ResponseEntity<?> fund(
             @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
             @Valid @ModelAttribute FundAccountRequest request,
             HttpServletRequest servletRequest) {
-        return render(payments.fundAccount(ownerDigest(), idempotencyKey, request), id -> null, servletRequest);
+        InternalIdentity identity = caller.require();
+        authorization.requireMoneyMovement(identity);
+        // Self-funding creates money from the platform funding account on the customer's word. It
+        // exists so a sandbox has something to spend; a real deployment funds through a payment rail.
+        if (!paymentProperties.isSandbox()) {
+            throw TransactionErrorCodes.SANDBOX_ONLY.exception();
+        }
+        return render(payments.fundAccount(ownerDigest(identity), idempotencyKey, request), id -> null, servletRequest);
     }
 
     // ---------------------------------------------------------------------------- helpers
@@ -206,8 +234,8 @@ public class TransactionController {
      * value and a header carrying one would let a caller present another service's digest. Deriving it
      * from the verified subject means the only input is something the gateway signed.
      */
-    private String ownerDigest() {
-        return digester.digestOf(caller.require().subject());
+    private String ownerDigest(InternalIdentity identity) {
+        return digester.digestOf(identity.subject());
     }
 
     /** Maps a facade result onto HTTP, uniformly for every money-moving endpoint. */

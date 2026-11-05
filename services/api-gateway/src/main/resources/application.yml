@@ -20,7 +20,7 @@ spring:
           max-idle: 8
           min-idle: 2
   cloud:
-    gateway:
+    gateway.server.webflux:
       # One limiter on every route, keyed by the caller (see RateLimitConfiguration). Per-route
       # snowflakes are refused here: no route has a known legitimate burst yet, and the day one
       # does, its filter declares it next to its path. Until then a single reviewed pair of
@@ -42,14 +42,22 @@ spring:
       # allow-credentials off that still trains reviewers to ignore the block. Production serves
       # the UI from its own origin and sets GATEWAY_CORS_ALLOWED_ORIGINS to exactly that.
       globalcors:
+        # The public registration route also has a POST method predicate, so its OPTIONS
+        # preflight does not match a route. Handle those preflights through the simple mapping.
+        add-to-simple-url-handler-mapping: true
         cors-configurations:
           '[/api/**]':
             allowedOrigins: ${GATEWAY_CORS_ALLOWED_ORIGINS:http://localhost:3001}
-            allowedMethods: [GET, POST, OPTIONS]
+            allowedMethods: [GET, POST, PUT, DELETE, OPTIONS]
             # Authorization and Content-Type make a request preflighted; Idempotency-Key rides
             # along because payments and top-ups require it, and X-Correlation-Id because the UI
             # sets it on every call so a support ticket can quote one id.
             allowedHeaders: [Authorization, Content-Type, Idempotency-Key, X-Correlation-Id]
+            maxAge: 3600
+          '[/register]':
+            allowedOrigins: ${GATEWAY_CORS_ALLOWED_ORIGINS:http://localhost:3001}
+            allowedMethods: [POST, OPTIONS]
+            allowedHeaders: [Content-Type, X-Correlation-Id]
             maxAge: 3600
       # Routes are declared per service, explicitly, rather than discovered from the registry.
       # A discovery locator routes whatever happens to be running, which means a service that was
@@ -65,7 +73,8 @@ spring:
           uri: ${AUTH_SERVICE_URL:http://localhost:8081}
           predicates:
             - Path=/register
-            - Method=POST
+          # Include OPTIONS so the browser's preflight matches this route. GatewaySecurityConfiguration
+          # permits OPTIONS but permits only POST for the unauthenticated registration operation.
 
         - id: customer-service
           uri: ${CUSTOMER_SERVICE_URL:http://localhost:8082}
@@ -170,7 +179,10 @@ server:
     include-stacktrace: never
     include-message: never
     include-binding-errors: never
-  forward-headers-strategy: framework
+  # Default "none": the client address (used to key the anonymous rate limits) is the TCP peer, so a
+  # caller cannot pick a fresh X-Forwarded-For per request to dodge the limits. Set
+  # SERVER_FORWARD_HEADERS_STRATEGY=framework only behind an ingress that overwrites X-Forwarded-*.
+  forward-headers-strategy: ${SERVER_FORWARD_HEADERS_STRATEGY:none}
   max-http-request-header-size: 16KB
   # No server.tomcat.* block: this is a reactive gateway on Netty, and Tomcat settings here would
   # be silently ignored while reading as if the servlet connector were configured.

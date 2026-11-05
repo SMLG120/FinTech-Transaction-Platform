@@ -306,6 +306,11 @@ services:
       # Keycloak 26 renamed the bootstrap admin variables; the old KEYCLOAK_ADMIN_* names are ignored.
       KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USERNAME:-admin}
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?run ./scripts/bootstrap.sh to create .env}
+      # Resolved by the realm import's ${...} placeholders, so the committed realm file holds no
+      # working credential. Required (:?) so a missing value fails startup instead of importing a
+      # literal "${SEED_USER_PASSWORD}" as everyone's password.
+      SEED_USER_PASSWORD: ${SEED_USER_PASSWORD:?run ./scripts/bootstrap.sh to create .env}
+      KEYCLOAK_ADMIN_CLIENT_SECRET: ${KEYCLOAK_ADMIN_CLIENT_SECRET:?run ./scripts/bootstrap.sh to create .env}
       KC_HEALTH_ENABLED: "true"
       KC_METRICS_ENABLED: "true"
       KC_HTTP_ENABLED: "true"
@@ -599,6 +604,9 @@ services:
       SERVICE_DB_PASSWORD: ${SERVICE_DB_PASSWORD:?run ./scripts/bootstrap.sh to create .env}
       SERVICE_DB_USERNAME: fintech_transactions
       SUBJECT_DIGEST_KEY: ${SUBJECT_DIGEST_KEY:?run ./scripts/bootstrap.sh to create .env}
+      # Local sandbox only: lets the demo customer top up and refund captured payments. Defaults to
+      # false in application.yml, so any deployment that does not opt in gets the production rules.
+      PAYMENTS_SANDBOX_MODE: ${PAYMENTS_SANDBOX_MODE:-true}
       KAFKA_BOOTSTRAP_SERVERS: kafka:19092
     ports:
       - "127.0.0.1:9084:8084"
@@ -774,9 +782,9 @@ services:
     ports:
       # Loopback only, like everything else in this file. The UI's origin is
       # http://localhost:3001, which is the origin the gateway and Keycloak allow.
-      - "127.0.0.1:${WEB_PORT:-3001}:80"
+      - "127.0.0.1:${WEB_PORT:-3001}:8080"
     healthcheck:
-      test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1:80/index.html || exit 1"]
+      test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1:8080/index.html || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 10

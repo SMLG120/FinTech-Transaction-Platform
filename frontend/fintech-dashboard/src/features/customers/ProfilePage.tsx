@@ -90,7 +90,8 @@ export function ProfilePage() {
           onRetry={() => void profile.refetch()}
         />
         <p className="field-hint">
-          A login without a customer profile has nothing to show here — register one first.
+          This sign-in is not linked to a customer profile. If you just created your account, try
+          signing out and back in. If the problem remains, contact support to reconcile the account.
         </p>
       </div>
     );

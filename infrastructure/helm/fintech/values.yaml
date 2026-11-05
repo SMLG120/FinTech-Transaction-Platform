@@ -64,6 +64,7 @@ services:
     rateLimitReplenishPerSecond: "100"
     rateLimitBurst: "200"
     serviceUrls:
+      AUTH_SERVICE_URL: "http://fintech-auth-service:8081"
       CUSTOMER_SERVICE_URL: "http://fintech-customer-service:8082"
       CARD_SERVICE_URL: "http://fintech-card-service:8083"
       TRANSACTION_SERVICE_URL: "http://fintech-transaction-service:8084"
@@ -83,7 +84,12 @@ services:
       username: fintech_auth
     redis: true
     kafka: false
+    customerServiceUrl: "http://fintech-customer-service:8082"
+    keycloakAdminBaseUrl: ""
+    keycloakAdminClientId: ""
+    keycloakRealm: ""
     secrets:
+      KEYCLOAK_ADMIN_CLIENT_SECRET: ""
       SERVICE_DB_PASSWORD: ""
   customer-service:
     ingressFrom:

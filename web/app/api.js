@@ -13,7 +13,8 @@
  *   id that ties the browser, the gateway and the service logs together.
  * - The access token lives in memory on the object that owns it. Never localStorage, never a
  *   cookie, never the URL: anything persisted outlives the session and becomes exfiltration bait
- *   for the first XSS hole.
+ *   for the first XSS hole. It is obtained by oidc.js (Authorization Code + PKCE); this module
+ *   never handles a password.
  */
 
 export const DEFAULT_CONFIG = Object.freeze({
@@ -107,32 +108,12 @@ export class ApiClient {
     this.#token = null;
   }
 
-  tokenUrl() {
-    return `${this.#config.keycloakBaseUrl}/realms/${this.#config.keycloakRealm}/protocol/openid-connect/token`;
-  }
-
-  /** Password grant against the dev realm. Production uses code+PKCE; see ADR-0013. */
-  async login(username, password) {
-    const params = new URLSearchParams({
-      grant_type: 'password',
-      client_id: this.#config.keycloakClientId,
-      username,
-      password,
-    });
-    const response = await this.#fetch(this.tokenUrl(), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: params.toString(),
-    });
-    if (!response.ok) {
-      throw new ApiError(parseError(response.status, await safeJson(response)));
-    }
-    const data = await response.json();
-    if (!data || typeof data.access_token !== 'string') {
-      throw new ApiError({ status: response.status, code: 'LOGIN_FAILED', message: 'No token issued', correlationId: null });
-    }
-    this.#token = data.access_token;
-    return data.access_token;
+  /**
+   * Installs (or clears) the access token. Issuance lives in oidc.js — Authorization Code with
+   * PKCE — so this client never sees a password and only ever holds a short-lived bearer token.
+   */
+  setToken(token) {
+    this.#token = typeof token === 'string' && token.length > 0 ? token : null;
   }
 
   async request(method, path, { body, idempotencyKey } = {}) {

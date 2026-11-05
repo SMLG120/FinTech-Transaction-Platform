@@ -60,6 +60,22 @@ random_base64() {
   openssl rand -base64 "${bytes}"
 }
 
+# A login password for the synthetic realm users (admin@, customer@, ... @fintech.test).
+#
+# Random per checkout, never committed: the realm file references it as a Keycloak import
+# placeholder, so a cloned repository contains no working credential for any role. The fixed
+# prefix and suffix only guarantee the upper/lower/digit/symbol classes the realm password policy
+# demands; the entropy is the 32 random alphanumerics in the middle (~190 bits).
+random_password() {
+  local core
+  core="$(openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | cut -c1-32)"
+  if [[ ${#core} -lt 32 ]]; then
+    echo "could not generate a seed user password" >&2
+    exit 1
+  fi
+  printf 'Fx-%s-9a' "${core}"
+}
+
 if [[ -f "${ENV_FILE}" && ${FORCE} -eq 0 ]]; then
   # Backfill any generated secret that a later phase added but this .env predates.
   #
@@ -70,7 +86,7 @@ if [[ -f "${ENV_FILE}" && ${FORCE} -eq 0 ]]; then
   # instead: a key is appended only if the file does not already have it, and nothing existing is
   # ever rewritten. A key that is present is left exactly as it is.
   backfilled=0
-  for name in CUSTOMER_PII_MASTER_KEY CARD_TOKENISATION_KEY SUBJECT_DIGEST_KEY KEYCLOAK_ADMIN_CLIENT_SECRET; do
+  for name in CUSTOMER_PII_MASTER_KEY CARD_TOKENISATION_KEY SUBJECT_DIGEST_KEY KEYCLOAK_ADMIN_CLIENT_SECRET SEED_USER_PASSWORD; do
     if ! grep -q "^${name}=" "${ENV_FILE}"; then
       echo "adding ${name}, which this .env predates"
       case "${name}" in
@@ -89,6 +105,7 @@ if [[ -f "${ENV_FILE}" && ${FORCE} -eq 0 ]]; then
         # already written under the old one, so rotate it before there are any.
         SUBJECT_DIGEST_KEY) value="$(random_base64 32)" ;;
         KEYCLOAK_ADMIN_CLIENT_SECRET) value="$(random_hex 32)" ;;
+        SEED_USER_PASSWORD) value="$(random_password)" ;;
         # Any future generated secret MUST get a case here. The default arm exits rather than
         # inventing a value, because a key generated with the wrong length fails at service startup
         # and a key generated with the wrong derivation silently works while protecting nothing.
@@ -116,6 +133,9 @@ GRAFANA_ADMIN_PASSWORD_VALUE="$(random_hex 24)"
 KEYCLOAK_ADMIN_CLIENT_SECRET_VALUE="$(random_hex 32)"
 INTERNAL_IDENTITY_SIGNING_KEY_VALUE="$(random_hex 32)"
 CUSTOMER_PII_MASTER_KEY_VALUE="$(random_base64 32)"
+CARD_TOKENISATION_KEY_VALUE="$(random_base64 32)"
+SUBJECT_DIGEST_KEY_VALUE="$(random_base64 32)"
+SEED_USER_PASSWORD_VALUE="$(random_password)"
 
 sed \
   -e "s|^KEYCLOAK_ADMIN_PASSWORD=.*|KEYCLOAK_ADMIN_PASSWORD=${KEYCLOAK_ADMIN_PASSWORD_VALUE}|" \
@@ -125,7 +145,10 @@ sed \
   -e "s|^GRAFANA_ADMIN_PASSWORD=.*|GRAFANA_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD_VALUE}|" \
   -e "s|^INTERNAL_IDENTITY_SIGNING_KEY=.*|INTERNAL_IDENTITY_SIGNING_KEY=${INTERNAL_IDENTITY_SIGNING_KEY_VALUE}|" \
   -e "s|^CUSTOMER_PII_MASTER_KEY=.*|CUSTOMER_PII_MASTER_KEY=${CUSTOMER_PII_MASTER_KEY_VALUE}|" \
+  -e "s|^CARD_TOKENISATION_KEY=.*|CARD_TOKENISATION_KEY=${CARD_TOKENISATION_KEY_VALUE}|" \
+  -e "s|^SUBJECT_DIGEST_KEY=.*|SUBJECT_DIGEST_KEY=${SUBJECT_DIGEST_KEY_VALUE}|" \
   -e "s|^KEYCLOAK_ADMIN_CLIENT_SECRET=.*|KEYCLOAK_ADMIN_CLIENT_SECRET=${KEYCLOAK_ADMIN_CLIENT_SECRET_VALUE}|" \
+  -e "s|^SEED_USER_PASSWORD=.*|SEED_USER_PASSWORD=${SEED_USER_PASSWORD_VALUE}|" \
   "${EXAMPLE_FILE}" >"${ENV_FILE}"
 
 chmod 600 "${ENV_FILE}"
@@ -142,6 +165,9 @@ Created ${ENV_FILE} with fresh random secrets (permissions 600).
 Next:
   docker compose up -d postgres redis kafka      # infrastructure only
   docker compose up --build                        # everything
+
+Sign in as any synthetic user (admin@, customer@, agent@ ... @fintech.test) with the
+SEED_USER_PASSWORD value in ${ENV_FILE}. It is random per checkout and is never printed here.
 
 Verify:
   docker compose ps

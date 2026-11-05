@@ -33,16 +33,18 @@ set -euo pipefail
 readonly GATEWAY="http://localhost:8080"
 readonly KEYCLOAK="http://localhost:8180"
 readonly ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "${ROOT_DIR}/scripts/private-temp.sh"
 readonly ENV_FILE="${ROOT_DIR}/.env"
-readonly DEV_PASSWORD="fintech-dev-only"
-readonly BODY_FILE=/tmp/chaos-body.json
+DEV_PASSWORD="$(fintech_seed_user_password "${ENV_FILE}")" || exit 1
+readonly DEV_PASSWORD
+readonly BODY_FILE="${FINTECH_TMP_DIR}/chaos-body.json"
 
-readonly CHAOS_USER="chaos-a@fintech.test"
+readonly RUN_ID="chaoscheck-${RANDOM}-${RANDOM}"
+readonly CHAOS_USER="chaos-${RUN_ID}@fintech.test"
 readonly FULL_NAME="Chaos Harper"
 readonly DOB="1990-06-15"
 readonly ADDRESS='{"line1":"7 Blast Radius Row","city":"London","postalCode":"E2 8DP","country":"GB"}'
 readonly DOCREF="SYNTH-PPT-9100"
-readonly RUN_ID="chaoscheck-${RANDOM}-${RANDOM}"
 
 # Containers this run stopped, so the EXIT trap restores exactly what it broke.
 STOPPED=""
@@ -67,7 +69,14 @@ restore() {
     wait_for_gateway
   fi
 }
-trap restore EXIT
+cleanup_on_exit() {
+  local exit_status=$?
+  fintech_cleanup_private_tmp
+  set +e
+  restore
+  exit "$exit_status"
+}
+trap cleanup_on_exit EXIT
 
 wait_for_gateway() {
   for _ in $(seq 1 60); do
@@ -104,13 +113,13 @@ kc_admin_token() {
   curl -s -X POST "${KEYCLOAK}/realms/master/protocol/openid-connect/token" \
     -d grant_type=password -d client_id=admin-cli \
     --data-urlencode "username=$(env_value KEYCLOAK_ADMIN_USERNAME)" \
-    --data-urlencode "password=$(env_value KEYCLOAK_ADMIN_PASSWORD)" |
+    --data-urlencode "password@$(fintech_keycloak_admin_password_file "$ENV_FILE")" |
     python3 -c 'import json,sys; print(json.load(sys.stdin).get("access_token", ""))'
 }
 
 kc_token() {
   curl -s -X POST "${KEYCLOAK}/realms/$(env_value KEYCLOAK_REALM)/protocol/openid-connect/token" \
-    -d grant_type=password -d client_id=fintech-web \
+    -d grant_type=password -d client_id=fintech-cli \
     --data-urlencode "username=$1" --data-urlencode "password=${DEV_PASSWORD}" |
     python3 -c 'import json,sys; print(json.load(sys.stdin).get("access_token", ""))'
 }
@@ -127,10 +136,10 @@ kc_ensure_user() {
     python3 -c 'import json,sys; u=json.load(sys.stdin); print(u[0]["id"] if u else "")')"
 
   if [[ -z "$user_id" ]]; then
-    status="$(curl -s -o /tmp/kc-body.json -w '%{http_code}' -X POST "${KEYCLOAK}/admin/realms/${realm}/users" \
+    status="$(curl -s -o "${FINTECH_TMP_DIR}/kc-body.json" -w '%{http_code}' -X POST "${KEYCLOAK}/admin/realms/${realm}/users" \
       -H "Authorization: Bearer ${admin}" -H 'Content-Type: application/json' \
       -d "{\"username\":\"${username}\",\"enabled\":true,\"email\":\"${username}\",\"emailVerified\":true,\"firstName\":\"Chaos\",\"lastName\":\"Harper\",\"credentials\":[{\"type\":\"password\",\"value\":\"${DEV_PASSWORD}\",\"temporary\":false}]}")"
-    [[ "$status" == "201" ]] || { cat /tmp/kc-body.json; fail "creating local dev user ${username}"; }
+    [[ "$status" == "201" ]] || fail "creating local dev user ${username}"
     user_id="$(curl -s "${KEYCLOAK}/admin/realms/${realm}/users?username=${username}&exact=true" \
       -H "Authorization: Bearer ${admin}" |
       python3 -c 'import json,sys; u=json.load(sys.stdin); print(u[0]["id"] if u else "")')"
@@ -138,10 +147,10 @@ kc_ensure_user() {
   [[ -n "$user_id" ]] || fail "could not resolve the id of ${username}"
 
   curl -s "${KEYCLOAK}/admin/realms/${realm}/roles/${role}" -H "Authorization: Bearer ${admin}" \
-    -o /tmp/kc-role.json
-  python3 -c "import json; json.dump([json.load(open('/tmp/kc-role.json'))], open('/tmp/kc-rolemap.json','w'))"
+    -o "${FINTECH_TMP_DIR}/kc-role.json"
+  fintech_json_array_file "${FINTECH_TMP_DIR}/kc-role.json" "${FINTECH_TMP_DIR}/kc-rolemap.json"
   curl -s -o /dev/null -X POST "${KEYCLOAK}/admin/realms/${realm}/users/${user_id}/role-mappings/realm" \
-    -H "Authorization: Bearer ${admin}" -H 'Content-Type: application/json' -d @/tmp/kc-rolemap.json
+    -H "Authorization: Bearer ${admin}" -H 'Content-Type: application/json' -d @"${FINTECH_TMP_DIR}/kc-rolemap.json"
 
   kc_token "$username" | grep -q . || fail "${username} cannot obtain a token after being created"
 }
@@ -202,11 +211,11 @@ read -r TOKEN CUSTOMER_ID <<<"$(setup_customer "$CHAOS_USER")" || fail "could no
 pass "chaos customer holds an approved profile"
 
 step "Baseline: issuing while healthy"
-curl -s -o "${BODY_FILE}" -w '%{http_code}' -X POST "${GATEWAY}/api/v1/cards" \
+CODE="$(curl -s -o "${BODY_FILE}" -w '%{http_code}' -X POST "${GATEWAY}/api/v1/cards" \
   -H "Authorization: Bearer ${TOKEN}" -H 'Content-Type: application/json' \
   -H "Idempotency-Key: ${RUN_ID}-baseline" \
-  -d "{\"customerId\":\"${CUSTOMER_ID}\",\"brand\":\"DEBIT\"}" | grep -q '^201$' \
-  || { cat "${BODY_FILE}"; fail "baseline card issue failed while the stack is healthy"; }
+  -d "{\"customerId\":\"${CUSTOMER_ID}\",\"brand\":\"DEBIT\"}")"
+[[ "$CODE" == "201" ]] || fail "baseline card issue failed while the stack is healthy (HTTP ${CODE})"
 pass "card issues while healthy"
 
 # ---- Experiment 1: the eligibility dependency is down --------------------------------------------
@@ -223,7 +232,7 @@ CODE="$(curl -s -o "${BODY_FILE}" -w '%{http_code}' --max-time 60 -X POST "${GAT
   -H "Idempotency-Key: ${RUN_ID}-outage" \
   -d "{\"customerId\":\"${CUSTOMER_ID}\",\"brand\":\"DEBIT\"}")"
 ELAPSED=$((SECONDS - START))
-[[ "$CODE" == "503" ]] || { cat "${BODY_FILE}"; fail "expected 503, got ${CODE}"; }
+[[ "$CODE" == "503" ]] || fail "expected 503, got ${CODE}"
 [[ "$(json 'd["error"]')" == "ELIGIBILITY_UNAVAILABLE" ]] ||
   fail "expected ELIGIBILITY_UNAVAILABLE, got $(json 'd["error"]')"
 [[ -n "$(json 'd["correlationId"]')" ]] || fail "refusal carries no correlation id for the support ticket"
@@ -248,21 +257,21 @@ for _ in $(seq 1 60); do
   sleep 2
 done
 [[ -n "$RECOVERED" ]] || fail "customer-service did not recover (me answered ${STATUS})"
-curl -s -o "${BODY_FILE}" -w '%{http_code}' -X POST "${GATEWAY}/api/v1/cards" \
+CODE="$(curl -s -o "${BODY_FILE}" -w '%{http_code}' -X POST "${GATEWAY}/api/v1/cards" \
   -H "Authorization: Bearer ${TOKEN}" -H 'Content-Type: application/json' \
   -H "Idempotency-Key: ${RUN_ID}-recovered" \
-  -d "{\"customerId\":\"${CUSTOMER_ID}\",\"brand\":\"DEBIT\"}" | grep -q '^201$' \
-  || { cat "${BODY_FILE}"; fail "card issue did not recover with customer-service"; }
+  -d "{\"customerId\":\"${CUSTOMER_ID}\",\"brand\":\"DEBIT\"}")"
+[[ "$CODE" == "201" ]] || fail "card issue did not recover with customer-service (HTTP ${CODE})"
 pass "card issues again after recovery"
 
 # ---- Experiment 2: the broker is down ----------------------------------------------------------------
 
 step "Experiment 2: funding, then stopping kafka"
 FUND_KEY="${RUN_ID}-fund"
-curl -s -o "${BODY_FILE}" -w '%{http_code}' -X POST \
+CODE="$(curl -s -o "${BODY_FILE}" -w '%{http_code}' -X POST \
   "${GATEWAY}/api/v1/accounts/fund?amount=500.00&currency=GBP" \
-  -H "Authorization: Bearer ${TOKEN}" -H "Idempotency-Key: ${FUND_KEY}" | grep -q '^200$' \
-  || { cat "${BODY_FILE}"; fail "funding failed while healthy"; }
+  -H "Authorization: Bearer ${TOKEN}" -H "Idempotency-Key: ${FUND_KEY}")"
+[[ "$CODE" == "200" ]] || fail "funding failed while healthy (HTTP ${CODE})"
 pass "account funded"
 stop_service kafka
 sleep 3
@@ -277,7 +286,7 @@ CODE="$(curl -s -o "${BODY_FILE}" -w '%{http_code}' --max-time 60 -X POST "${GAT
   -H "Idempotency-Key: ${PAY_KEY}" \
   -d "{\"amount\":\"5.00\",\"currency\":\"GBP\",\"cardToken\":\"${CARD_TOKEN}\",\"payeeName\":\"Chaos Grocer\",\"payeeReference\":\"${PAY_KEY}\"}")"
 ELAPSED=$((SECONDS - START))
-[[ "$CODE" == "201" ]] || { cat "${BODY_FILE}"; fail "expected 201, got ${CODE}"; }
+[[ "$CODE" == "201" ]] || fail "expected 201, got ${CODE}"
 TXN_STATUS="$(json 'd["status"]')"
 TXN_ID="$(json 'd["id"]')"
 [[ "$TXN_STATUS" == "AUTHORIZED" ]] || fail "payment came back ${TXN_STATUS} instead of AUTHORIZED"

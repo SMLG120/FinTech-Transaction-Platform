@@ -38,9 +38,12 @@ set -euo pipefail
 readonly GATEWAY="http://localhost:8080"
 readonly KEYCLOAK="http://localhost:8180"
 readonly ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "${ROOT_DIR}/scripts/private-temp.sh"
+trap fintech_cleanup_private_tmp EXIT
 readonly ENV_FILE="${ROOT_DIR}/.env"
-readonly DEV_PASSWORD="fintech-dev-only"
-readonly BODY_FILE=/tmp/audit-body.json
+DEV_PASSWORD="$(fintech_seed_user_password "${ENV_FILE}")" || exit 1
+readonly DEV_PASSWORD
+readonly BODY_FILE="${FINTECH_TMP_DIR}/audit-body.json"
 
 # A distinct identity per run, so a second run exercises fresh money rather than replaying the first
 # run's and appearing to pass for the wrong reason.
@@ -83,7 +86,6 @@ expect_status() {
   got="$(request "$method" "$url" "$body" "$token")"
   if [[ "$got" != "$want" ]]; then
     printf '  expected %s, got %s\n' "$want" "$got"
-    cat "$BODY_FILE"
     fail "$method $url"
   fi
 }
@@ -135,7 +137,7 @@ kc_token() {
   [[ "$username" == *@* ]] || username="${username}@fintech.test"
   local response
   response="$(curl -s -X POST "${KEYCLOAK}/realms/$(env_value KEYCLOAK_REALM)/protocol/openid-connect/token" \
-    -d grant_type=password -d client_id=fintech-web \
+    -d grant_type=password -d client_id=fintech-cli \
     --data-urlencode "username=${username}" --data-urlencode "password=${DEV_PASSWORD}")"
   python3 -c 'import json,sys
 try:
@@ -148,7 +150,7 @@ kc_admin_token() {
   curl -s -X POST "${KEYCLOAK}/realms/master/protocol/openid-connect/token" \
     -d grant_type=password -d client_id=admin-cli \
     --data-urlencode "username=$(env_value KEYCLOAK_ADMIN_USERNAME)" \
-    --data-urlencode "password=$(env_value KEYCLOAK_ADMIN_PASSWORD)" |
+    --data-urlencode "password@$(fintech_keycloak_admin_password_file "$ENV_FILE")" |
     python3 -c 'import json,sys; print(json.load(sys.stdin).get("access_token", ""))'
 }
 
@@ -169,25 +171,25 @@ kc_ensure_user() {
 
   user_id="$(kc_user_id "$username")"
   if [[ -z "$user_id" ]]; then
-    cat > /tmp/kc-new-user.json <<JSON
+    cat > "${FINTECH_TMP_DIR}/kc-new-user.json" <<JSON
 {"username":"${username}","enabled":true,"email":"${username}","emailVerified":true,
  "firstName":"Audit","lastName":"Check",
  "credentials":[{"type":"password","value":"${DEV_PASSWORD}","temporary":false}]}
 JSON
-    status="$(curl -s -o /tmp/kc-body.json -w '%{http_code}' -X POST \
+    status="$(curl -s -o "${FINTECH_TMP_DIR}/kc-body.json" -w '%{http_code}' -X POST \
       "${KEYCLOAK}/admin/realms/${realm}/users" \
       -H "Authorization: Bearer ${admin}" -H 'Content-Type: application/json' \
-      -d @/tmp/kc-new-user.json)"
-    [[ "$status" == "201" ]] || { cat /tmp/kc-body.json; fail "creating local dev user ${username}"; }
+      -d @"${FINTECH_TMP_DIR}/kc-new-user.json")"
+    [[ "$status" == "201" ]] || fail "creating local dev user ${username}"
     user_id="$(kc_user_id "$username")"
   fi
   [[ -n "$user_id" ]] || fail "could not resolve the id of ${username}"
 
   curl -s "${KEYCLOAK}/admin/realms/${realm}/roles/CUSTOMER" -H "Authorization: Bearer ${admin}" \
-    -o /tmp/kc-role.json
-  python3 -c "import json; json.dump([json.load(open('/tmp/kc-role.json'))], open('/tmp/kc-rolemap.json','w'))"
+    -o "${FINTECH_TMP_DIR}/kc-role.json"
+  fintech_json_array_file "${FINTECH_TMP_DIR}/kc-role.json" "${FINTECH_TMP_DIR}/kc-rolemap.json"
   curl -s -o /dev/null -X POST "${KEYCLOAK}/admin/realms/${realm}/users/${user_id}/role-mappings/realm" \
-    -H "Authorization: Bearer ${admin}" -H 'Content-Type: application/json' -d @/tmp/kc-rolemap.json
+    -H "Authorization: Bearer ${admin}" -H 'Content-Type: application/json' -d @"${FINTECH_TMP_DIR}/kc-rolemap.json"
 
   kc_token "$username" | grep -q . || fail "${username} cannot obtain a token after being created"
 }
@@ -249,7 +251,7 @@ fund() {
   code="$(curl -s -o "$BODY_FILE" -w '%{http_code}' -X POST \
     "${GATEWAY}/api/v1/accounts/fund?amount=${amount}&currency=${CURRENCY}" \
     -H "Authorization: Bearer ${token}" -H "Idempotency-Key: ${key}")"
-  [[ "$code" == "200" ]] || { cat "$BODY_FILE"; fail "funding ${amount} ${CURRENCY}"; }
+  [[ "$code" == "200" ]] || fail "funding ${amount} ${CURRENCY} returned HTTP ${code}"
 }
 
 pay() {
@@ -258,7 +260,7 @@ pay() {
     -H "Authorization: Bearer ${token}" -H "Idempotency-Key: ${key}" -H 'Content-Type: application/json' \
     -d "$(printf '{"amount":"%s","currency":"%s","cardToken":"%s","payeeName":"%s","payeeReference":"auditcheck-%s"}' \
         "$amount" "$CURRENCY" "$card" "$payee" "$key")")"
-  [[ "$code" == "201" ]] || { cat "$BODY_FILE"; fail "paying ${amount} ${CURRENCY}"; }
+  [[ "$code" == "201" ]] || fail "paying ${amount} ${CURRENCY} returned HTTP ${code}"
 }
 
 # ---- the check ------------------------------------------------------------------------------
@@ -349,7 +351,7 @@ expect_status 200 GET "${GATEWAY}/api/audit/records/${RECORD_ID}" "" "$AUDITOR_T
 TIMELINE_DIGEST="$(fraud_psql "select actor_digest from fraud_alert_events where alert_id='${ALERT_ID}' and action='CLAIMED'")"
 [[ -n "$TIMELINE_DIGEST" ]] || fail "the alert timeline has no CLAIMED entry to compare against"
 [[ "$(json 'd["actorDigest"]')" == "$TIMELINE_DIGEST" ]] ||
-  fail "the trail's actor '$(json 'd["actorDigest"]')' is not the timeline's '${TIMELINE_DIGEST}'"
+  fail "the trail actor digest does not match the fraud timeline"
 ANALYST_SUBJECT="$(token_subject "$ANALYST_TOKEN")"
 [[ "$(json 'd["actorDigest"]')" != "$ANALYST_SUBJECT" ]] ||
   fail "the trail names the analyst's raw subject, which is a person where a pseudonym belongs"

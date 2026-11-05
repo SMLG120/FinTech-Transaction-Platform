@@ -1,631 +1,337 @@
 # Secure FinTech Transaction Platform
 
-An event-driven payment platform built as a set of independently deployable Spring Boot services.
+A synthetic, event-driven transaction platform implemented as a Java/Spring Boot service suite,
+with a browser UI and a React/TypeScript operations dashboard. It is a development and review project:
+it does **not** connect to a payment network, handle real cards, or move real money. KYC and message
+delivery are simulated.
 
-This repository was built in sixteen phases, and **all sixteen are complete**: ten service
-skeletons, local infrastructure, observability wiring and build pipeline are in place, and the
-platform now carries a payment from authorisation through fraud scoring to a period statement that is
-reconciled against a bank figure and cannot be edited once it has been given out — tells the
-customer and the operator about each step, records who did what in a trail nobody can edit, takes
-money back when a chargeback case says so, and shows it all in a browser: the static customer UI
-in `web/` plus a React + TypeScript dashboard in `frontend/fintech-dashboard/` covering every
-role behind an enterprise design system (shared tokens and primitives, grouped role-aware
-navigation, dashboard balance hero, and consistent loading/empty/error states). The phase list
-below records what each phase established. What is not built yet is stated in the phase list
-rather than left to be discovered.
+> **Production status: NOT READY.** The local stack is deliberately development-only. The Kubernetes
+> chart deploys backend services but not their external dependencies, ingress, frontend, or a migration
+> job. Service-to-service mTLS is designed but not implemented, local/dev authentication flows remain
+> in the UIs, and the payment/KYC/notification integrations are simulations. See
+> [Production deployment](#production-deployment-and-current-blockers).
 
-> **No real payment network, no real card numbers, no real money.** Every card number, token and
-> identity in this repository is synthetic test data. Card data is tokenised at the edge and the
-> platform never stores a PAN or a CVV. See [docs/security.md](docs/security.md).
+## Architecture
 
----
+```text
+Browser ── JWT ──▶ API gateway ── signed internal identity ──▶ Spring services
+                         │                                        │
+                         ├── Keycloak (identity)                  ├── PostgreSQL
+                         └── Redis (rate limits)                  └── Kafka events
+                                                                    ├── fraud
+                                                                    ├── audit
+                                                                    ├── settlement
+                                                                    ├── notifications
+                                                                    └── disputes
+```
 
-## Quick start
+The ten Spring Boot services are independently buildable and own separate PostgreSQL databases and
+roles. The gateway validates JWT signature, issuer, audience, expiry, and realm roles. Services verify
+the gateway's signed identity and apply resource-level authorization. Kafka carries asynchronous
+events; the transaction service uses a double-entry ledger, database idempotency, and an outbox.
+Amounts are integer minor units. Customer PII is encrypted at rest, and card numbers are never stored.
+
+| Area | Implementation |
+| --- | --- |
+| Ingress and identity | `api-gateway`, `auth-service`, Keycloak |
+| Customer and cards | `customer-service`, `card-service` |
+| Money movement | `transaction-service`, double-entry ledger and idempotency |
+| Risk and operations | `fraud-service`, `settlement-service`, `notification-service`, `audit-service`, `dispute-service` |
+| Browser clients | `web/` static customer UI; `frontend/fintech-dashboard/` React + TypeScript dashboard |
+| Local infrastructure | Docker Compose, PostgreSQL, Redis, Kafka, Keycloak, Prometheus, Grafana |
+| Kubernetes | `infrastructure/helm/fintech/`; backend services only |
+
+Further design details: [architecture](docs/architecture.md), [security](docs/security.md),
+[deployment](docs/deployment.md), [runbooks](docs/runbooks/README.md), and
+[architecture decisions](docs/decisions/).
+
+## Technology and prerequisites
+
+- JDK **21** and the included Maven wrapper (`./mvnw`, Maven 3.9.16).
+- Docker Engine/Desktop with Docker Compose v2, for the local stack and Testcontainers tests.
+- Node.js 20+ and npm for the browser apps and frontend tests.
+- Helm 3 for chart validation. Python 3, `curl`, and OpenSSL are used by local scripts.
+
+The repository's Maven enforcer rejects Java versions below 21. If the system default is older, set
+`JAVA_HOME` to a JDK 21 installation before Maven commands. `make doctor` reports the selected Java
+runtime and available tooling.
+
+## Local setup
+
+From the repository root:
 
 ```bash
-# 1. Check the toolchain, and follow the remedy it prints if the JDK is too old.
 make doctor
-
-# 2. Generate .env with random secrets. Required before anything starts.
-make setup
-
-# 3. Start everything.
-make up
-
-# 4. Confirm it is healthy.
+make setup       # creates .env with random local secrets; does not overwrite an existing file
+make up          # builds and starts the local stack
 make ps
 ```
 
-| What | Where |
+Compose publishes host ports on `127.0.0.1` only. The application itself is not reachable from the
+local network.
+
+| Service | Local URL |
 | --- | --- |
-| Gateway | http://localhost:8080 |
-| Web UI | http://localhost:3001 |
-| React dashboard (dev, `npm run dev` in `frontend/fintech-dashboard/`) | http://localhost:5173 |
-| Kafka UI | http://localhost:8081 |
-| Keycloak | http://localhost:8180 |
-| Prometheus | http://localhost:9090 |
-| Grafana | http://localhost:3000 |
-| Individual services | http://localhost:9081–9089 |
+| API gateway | <http://localhost:8080> |
+| Static customer UI (served by Compose) | <http://localhost:3001> |
+| React dashboard dev server (start separately) | <http://localhost:5173> |
+| Keycloak | <http://localhost:8180> |
+| Kafka UI | <http://localhost:8081> |
+| Prometheus / Grafana | <http://localhost:9090> / <http://localhost:3000> |
+| Direct service ports (loopback only) | `9081`–`9089` |
 
-Credentials for Keycloak, Grafana, Kafka UI and Postgres are the randomly generated values in
-`.env`. That file is gitignored and readable only by you.
+Stop services and retain their data with `make down`. `make clean-all` removes the Compose data
+volumes; it is destructive. Back up first if the local data matters.
 
-Stop the stack with `make down`. `make clean-all` also deletes the database volumes.
+### Local identities and customer registration
 
-### Calling the API as a local user
+The imported development realm contains synthetic users. Their password is **not** committed: the
+realm file references `${SEED_USER_PASSWORD}`, which `./scripts/bootstrap.sh` generates randomly into
+`.env` (read it with `grep SEED_USER_PASSWORD .env`). An existing `keycloak-data` volume keeps the
+password it was first imported with, so run `docker compose down -v` once after upgrading:
 
-Phase 2 gave the gateway real authentication, so there is a token to get. The realm ships seven
-synthetic users, one per role:
+| Username | Role |
+| --- | --- |
+| `customer@fintech.test` | `CUSTOMER` |
+| `agent@fintech.test` | `SUPPORT_AGENT` |
+| `auditor@fintech.test` | `AUDITOR` |
+| `compliance@fintech.test` | `COMPLIANCE_OFFICER` |
+| `analyst@fintech.test` | `FRAUD_ANALYST` |
+| `settlement@fintech.test` | `SETTLEMENT_OPERATOR` |
+| `admin@fintech.test` | `PLATFORM_ADMIN` |
+
+These credentials and the dev-only `fintech-cli` client (the password grant the scripts use) are **local-development fixtures only**. Never use
+them in another environment. Get a local bearer token with `./scripts/get-token.sh customer` (replace
+`customer` with a listed short name); add `--decode` to inspect claims instead of printing the token.
+
+`POST /register` is the unauthenticated customer account-provisioning endpoint. It creates a Keycloak
+user and customer profile. The imported realm intentionally does not contain the confidential
+`fintech-registration` service-account client. To use registration locally, create that client in
+Keycloak as described in [the realm guide](infrastructure/keycloak/realm/README.md), enable service
+accounts, grant only the documented user/role management permissions, and configure its client secret
+to match `KEYCLOAK_ADMIN_CLIENT_SECRET` in the local `.env` (or update `.env` to the client-generated
+secret). Then recreate `auth-service`. Do not grant `realm-admin`.
+
+The customer service also exposes `POST /api/v1/customers` for an already-authenticated customer whose
+identity exists in Keycloak. It creates a profile only; it does not create an identity-provider user.
+
+### Environment variables and secrets
+
+`.env.example` documents local Compose variables. `make setup` generates `.env`; the generated file is
+ignored by Git and restricted to the current user. Do not print it into logs or commit it. Required
+generated local secrets include:
+
+| Variable | Purpose |
+| --- | --- |
+| `POSTGRES_SUPERUSER_PASSWORD` | PostgreSQL bootstrap administrator; never passed to app services |
+| `SERVICE_DB_PASSWORD` | Shared local-only password for separate service database roles |
+| `REDIS_PASSWORD` | Local Redis authentication |
+| `KEYCLOAK_ADMIN_PASSWORD`, `GRAFANA_ADMIN_PASSWORD` | Local operator accounts |
+| `KEYCLOAK_ADMIN_CLIENT_SECRET` | Auth-service's dedicated Keycloak provisioning client |
+| `INTERNAL_IDENTITY_SIGNING_KEY` | Interim gateway-to-service HMAC identity key (hex) |
+| `CUSTOMER_PII_MASTER_KEY` | Customer PII encryption key (base64-encoded 32 bytes) |
+| `CARD_TOKENISATION_KEY` | Card tokenisation key (base64-encoded 32 bytes) |
+| `SUBJECT_DIGEST_KEY` | Subject digest key shared by transaction and fraud services (base64-encoded 32 bytes) |
+
+Local ports, log levels, database pool sizes, and similar overrides are listed in `.env.example`.
+Compose service URLs and local issuer/CORS defaults are declared in `docker-compose.yml`; production
+must override the issuer, JWKS URI, API audience, allowed browser origins, service URLs, and database
+endpoints for its environment. The React app's `frontend/fintech-dashboard/.env.example` contains only
+public endpoint addresses; Vite `VITE_*` values are included in browser assets and must never contain
+secrets.
+
+For a non-local deployment, use distinct credentials per service and a managed secret-delivery
+mechanism. The local `SERVICE_DB_PASSWORD` is not a production pattern. Never put real values in an
+environment template, container image, Helm values committed to Git, frontend bundle, or command-line
+arguments.
+
+## Database initialization and backups
+
+On the first start with an empty PostgreSQL volume, `infrastructure/docker/postgres/init/` creates one
+database and least-privilege role per database-backed service. That init script runs only for an empty
+data directory. Local services apply Flyway migrations at startup and validate the resulting schema;
+production chart pods disable Flyway, but a separate production migration job has **not** been provided.
+
+The local backup helper is:
 
 ```bash
-./scripts/get-token.sh customer      # or: agent, auditor, compliance, admin
-./scripts/get-token.sh customer --decode   # just the claims, for reading
+./scripts/backup-postgres.sh
+./scripts/backup-postgres.sh --list
+./scripts/backup-postgres.sh --restore <backup-directory>
 ```
+
+Backups are gzip-compressed SQL, not encrypted. Treat them as sensitive data. The repository excludes
+`backups/` from Git and Docker build contexts, and new files use owner-only permissions; restrict any
+copies made elsewhere. Do not use this script as a production backup/recovery plan.
+Production needs encrypted backups, point-in-time recovery, retention controls, and regularly tested
+restores.
+
+## Browser applications
+
+The Compose stack serves `web/`, a dependency-free static customer UI. The React/TypeScript dashboard
+is a separate source application and is not built or served by Compose:
 
 ```bash
-TOKEN=$(./scripts/get-token.sh customer)
-
-# Authorised, so the gateway forwards it. 404 rather than 200 because the route does not exist yet.
-curl -i -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/accounts
-
-# Wrong role: the gateway refuses before the request reaches a service.
-curl -i -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/admin/users
-# HTTP/1.1 403
-# {"error":{"code":"INSUFFICIENT_ROLE","message":"..."}}
+cd frontend/fintech-dashboard
+npm ci
+npm run dev
 ```
 
-The five users, and the paths each may reach:
+Its public endpoint settings are in `.env.example`. Both frontends sign in with OAuth Authorization Code + PKCE (S256) on the public `fintech-web`
+client: the UIs never see a password, and tokens are kept in memory only. The browser client has
+the password grant disabled; scripts use the separate dev-only `fintech-cli` client. The React
+dashboard still has no production image/deployment configuration; do not expose it as a production
+client. The static UI image is also a local Compose artifact, not a complete
+production frontend deployment.
 
-| User | Role | May reach |
-| --- | --- | --- |
-| `customer@fintech.test` | `CUSTOMER` | `/api/**` |
-| `agent@fintech.test` | `SUPPORT_AGENT` | `/api/**`, `/api/support/**` |
-| `auditor@fintech.test` | `AUDITOR` | `/api/audit/**` |
-| `compliance@fintech.test` | `COMPLIANCE_OFFICER` | `/api/audit/**`, `/api/compliance/**` |
-| `admin@fintech.test` | `PLATFORM_ADMIN` | everything under `/api/**` |
+## API and authentication
 
-Their passwords are in `infrastructure/keycloak/realm/README.md` and exist only in the local
-development realm. Do not reuse them anywhere.
+API requests use `Authorization: Bearer <access-token>` at the gateway. The gateway verifies the JWT
+using the configured issuer/JWKS and requires the `fintech-api` audience, then authorizes by realm
+role. It strips client-supplied internal identity headers and signs the verified identity for the
+service. Services verify that signature and enforce ownership and operation-specific roles. A caller
+must not treat frontend role-based navigation as authorization.
 
-Reaching `/api/**` is necessary but not sufficient. The gateway answers the coarse question "is this
-caller allowed in at all"; customer-service answers the real one, "is this caller *this* customer", and
-masks the personal fields for everyone else. A support agent gets a 200 from the gateway and a masked
-profile.
+Representative API routes (all business routes require a valid bearer token except `POST /register`):
 
-### Registering a customer and running an identity check
+| Service | Routes |
+| --- | --- |
+| Authentication | `POST /register` |
+| Customers | `/api/v1/customers` (`GET/PUT/DELETE /me`, `GET /{customerId}`, KYC submit/history) |
+| Cards | `/api/v1/cards` (issue/list/read, freeze/unfreeze/lost, cancel) |
+| Transactions/accounts | `/api/v1/transactions` (create/list/read/settle/reverse), `/api/v1/accounts` (balance/fund) |
+| Fraud | `/api/v1/fraud/decisions`, `/api/v1/fraud/alerts`, `/api/v1/fraud/summary` |
+| Settlement | `/api/v1/settlement/cycles` and `/api/v1/settlement/breaks` |
+| Notifications | `/api/v1/notifications` |
+| Audit | `/api/audit/records` |
+| Disputes | `/api/v1/disputes` |
 
-Every value below is synthetic. The subject comes from the token, so there is no field to set it with.
+Money-moving payment and funding requests require an `Idempotency-Key`. The gateway exposes only
+`/actuator/health` and `/actuator/prometheus` without authentication; services have their own
+network-restricted operational probes. See [the security review](docs/security.md) for the current
+trust boundaries and gaps.
+
+## Tests and verification
+
+Frontend checks:
 
 ```bash
-TOKEN=$(./scripts/get-token.sh customer)
-
-curl -i -X POST http://localhost:8080/api/v1/customers \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"fullName":"Dana Okonkwo","dateOfBirth":"1991-04-17","nationality":"GB",
-       "email":"dana@example.test","phone":"+447700900123",
-       "address":{"line1":"12 Alder Way","city":"Manchester","postalCode":"M1 4BT","country":"GB"}}'
-# HTTP/1.1 201 Created, Location: /api/v1/customers/1b1f...
-
-# Your own profile, unmasked.
-curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/customers/me
-
-# Submit a document. The provider is the synthetic one, so a British applicant with a current
-# document and a matching name is approved and a mismatch is rejected.
-curl -i -X POST http://localhost:8080/api/v1/customers/1b1f.../kyc \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"documentReference":"SYNTH-0001","printedName":"Dana Okonkwo",
-       "expiryDate":"2031-04-17","issuingCountry":"GB","nationality":"GB"}'
-
-# A different user's profile: masked, even for a support agent.
-SUPPORT_TOKEN=$(./scripts/get-token.sh agent)
-curl -s -H "Authorization: Bearer $SUPPORT_TOKEN" http://localhost:8080/api/v1/customers/1b1f...
-# {"id":"...","fullName":"D*** O******","birthYear":"1991","email":"d***@example.test",...}
-
-# Erasure. Irreversible: the ciphertext is nulled and the email/phone lookup keys are dropped, so
-# the profile can no longer be found by the email that was given. HTTP 204.
-curl -i -X DELETE -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/customers/me
-
-# Asking again is 409, and reading the profile afterwards is 410 rather than 404, so a customer
-# exercising a deletion right gets a definite answer instead of an ambiguous "not found".
-curl -i -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/customers/me
-# HTTP/1.1 410 Gone
+cd frontend/fintech-dashboard
+npm ci
+npm run typecheck
+npm run lint
+npm test -- --run
+npm run build
 ```
 
-The data in PostgreSQL is ciphertext. See
-[ADR-0005](docs/decisions/0005-pii-encrypted-at-rest.md).
-
-### Issuing a card
-
-```
-# A cardholder with an approved identity check issues their own card. The response is the only
-# time the number exists outside the issuing process.
-curl -i -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"customerId":"'"$CUSTOMER_ID"'","brand":"DEBIT"}' http://localhost:8080/api/v1/cards
-# HTTP/1.1 201 Created
-# {"cardNumber":"9240 7425 2668 2412","card":{"id":"...","last4":"2412","status":"ACTIVE",...}}
-
-curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/cards
-curl -i -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/cards/$CARD_ID/freeze
-curl -i -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/cards/$CARD_ID/unfreeze
-curl -i -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/cards/$CARD_ID/lost
-curl -i -X DELETE -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/cards/$CARD_ID
-```
-
-The `cards` table holds a token, a last-four and a lifecycle. There is no column a number could be
-stored in, encrypted or otherwise, and the number is not retrievable afterwards. See
-[ADR-0006](docs/decisions/0006-card-tokenisation.md).
-
-To run all of the above as an assertion rather than by hand, plus the refusals — reading somebody
-else's card, issuing against somebody else's customer, issuing to a customer who has failed identity
-checks:
-
-```
-./scripts/verify-card-lifecycle.sh
-```
-
-It provisions its own throwaway Keycloak identities, walks issue → list → freeze → unfreeze → lost →
-cancel, asserts the number appears in exactly one response, and refuses to issue on a cardholder who
-is not the caller. It needs the stack up (`make up`). The identities it creates are explained in
-[infrastructure/keycloak/realm/README.md](infrastructure/keycloak/realm/README.md).
-
-### Payments
-
-A payment is the one operation in the platform where a bug is not a wrong answer but extra money, so
-the live check goes after the paths that only exist over HTTP: that the gateway routes
-`/api/v1/transactions` and `/api/v1/accounts`, that `Idempotency-Key` survives the gateway hop, and
-that a replay is **byte-identical** to the original response rather than merely the same status code.
-
-```
-./scripts/verify-payment-lifecycle.sh
-```
-
-It provisions its own throwaway identities, funds an account, replays the top-up and diffs the bytes,
-pays, replays the payment and asserts one row in the database, reuses a key with a different amount
-and expects `409 IDEMPOTENCY_KEY_REUSED`, declines an unaffordable payment with a `422` and a
-`DECLINED` body, settles, reverses, and checks in SQL that every journal entry balances, no customer
-account is negative, and the only card reference stored is the opaque token.
-
-The byte comparison is the part worth keeping. The first version of that check compared status codes
-and passed while the service was returning a JSON-quoted string instead of an object — the payment
-was made once, the status was 201, and only a client parsing `$.id` would have failed. Details in
-[ADR-0007](docs/decisions/0007-double-entry-ledger-and-idempotency.md).
-
-### Fraud is scored after the payment, not before it
-
-A payment is authorised on transaction-service's own rules and scored afterwards, so fraud-service is
-on no payment's critical path and cannot make payments fail. The live check goes after the parts that
-only exist once both services are running and a real topic is between them:
-
-```
-./scripts/verify-fraud-lifecycle.sh
-```
-
-It funds two throwaway customers, pays twice with one card, and waits for the engine rather than
-assuming it has already run — then checks the things a service-level test cannot: that the payment was
-authorised *before* a decision existed, that the `ownerSubjectDigest` fraud-service holds is byte-equal
-to the one transaction-service sent, that the digest is not the card token, that a second claim on a
-claimed alert is refused, that an `AUDITOR` can read the dashboard and is refused an action, that a
-manual score of 90 is a `422 MANUAL_SCORE_ABOVE_CAP` while 900 is a plain validation error and neither
-moves the stored score, and that the alert timeline records the re-score *with its reason* and an actor.
-
-The digest comparison is the one that earns its keep. If the two services disagree about the key or
-the derivation, nothing errors: the engine raises an alert against a subject nobody recognises and
-velocity silently resets. Only reading both databases shows it.
-
-### A statement that has been given out cannot be edited
-
-Settlement is the one place in the platform where the answer is "we do not know yet" and that is
-correct, because the honest answer to a bank's figure has not arrived. A period is counted from the
-events, closed, given out, and then compared with a figure the platform is told from outside — because
-a system that reconciles its own arithmetic against itself has not checked anything. The live check
-goes after the parts that only exist once money has actually moved through a real topic:
-
-```
-./scripts/verify-settlement-lifecycle.sh
-```
-
-It needs a day-and-currency period of its own, because it closes one: a cycle is unique per
-`(business_date, currency)`, so the default USD period is spent by a run. `SETTLEMENT_CHECK_CURRENCY=EUR`
-runs it in another, and `--reset-period` clears an `OPEN` period left behind by an interrupted run —
-never a closed one, which is the one thing this service will not edit.
-
-It pays, waits for the payment to appear on a statement line, refunds it, and checks in SQL that the
-refund carried as a **negative** line and that the pair nets to zero. Then it closes the period, and
-makes a payment that lands *after* the close — the case the whole design is about. The money moved and
-the period is final, so the platform must neither mutate the statement nor lose the payment: the frozen
-total is unchanged, no line is added, and a `PERIOD_ALREADY_CLOSED` finding is recorded. Finally it
-declares an actual a pound short, checks that a mismatch comes back as a `200` with a negative
-difference rather than a `409`, that the period cannot be confirmed while a finding is open, and that
-the finding carries the acknowledging operator.
-
-Three things in there are worth more than the rest. The late payment is the immutability rule
-observed across Kafka rather than asserted in a unit test. The `200` for a mismatch is the difference
-between "your request was fine and the news is in the reply" and "your request was malformed" — the
-latter sends an operator looking at their own keyboard instead of at the clearing file. And the
-refund netting to zero in SQL is the check that a reversal was stored as a *movement in the opposite
-direction* rather than as a positive amount with a label on it, which is a statement that adds money
-nobody received. Design in [ADR-0009](docs/decisions/0009-settlement-cycles-and-reconciliation.md).
-
-### The platform tells somebody, exactly once
-
-Notification-service consumes the transaction, fraud and settlement topics and turns each fact into
-one message — push for a payment, SMS for a fraud outcome worth acting on, email for a settlement
-period — claimed with an insert so a redelivered event cannot tell the customer twice. An approved
-payment notifies nobody: there is no human action in it, and a message per approval would be noise
-at best and a per-payment SMS bill at worst. The live check goes after the parts that only exist
-once a real topic is between the services:
-
-```
-./scripts/verify-notification-lifecycle.sh
-```
-
-It pays, waits for the message rather than assuming it has already been written, and checks the
-things a service-level test cannot: that the gateway routes `/api/v1/notifications` to a support
-agent and refuses it to a customer and an auditor, that the response names the recorded figure with
-no recipient digest in it, that the database holds one row for the payment with no column a card
-number could be stored in, that retrying the sent message is a `409 NOTIFICATION_ALREADY_SENT`
-rather than a second delivery, and that a failed message retries to `SENT`.
-
-Two things in there are worth more than the rest. The digest absence is the join key that must
-never travel: the row holds the owner digest and the view renders everything except it, because a
-digest in a support response joins across the fraud and notification databases for anyone who can
-read both. And the `409` for a sent retry is the difference between "there is nothing to do" said
-loudly and a duplicate delivery nobody ordered. Design in
-[ADR-0010](docs/decisions/0010-notification-delivery-and-retry.md).
-
-### Who did what is written where nobody can rewrite it
-
-Audit-service consumes `audit-events` and keeps the platform's trail: who did what to which
-resource, with what outcome. It is a separate service because an audit log written by the component
-it audits records what that component chose to record. The table is append-only by database
-trigger, not by convention — an `UPDATE` or `DELETE` issued straight at the database is refused —
-and the API has no write endpoint at all, so a write is an unmapped route rather than a forbidden
-action. The live check goes after the parts that only exist once a real analyst acts through a real
-topic:
-
-```
-./scripts/verify-audit-lifecycle.sh
-```
-
-It raises an alert with a burst of payments, claims it as the realm's analyst, waits for the trail
-rather than assuming it has already been written, and checks the things a service-level test
-cannot: that the gateway routes `/api/audit/records` to an auditor and refuses it to a customer, a
-support agent and a fraud analyst; that the row's actor matches the digest on the alert timeline
-without naming the analyst's raw subject; that a refused second claim leaves no second row; and
-that an `UPDATE` and a `DELETE` against the trail are refused by the database itself.
-
-Two things in there are worth more than the rest. The digest comparison is the join that must
-agree: fraud-service computed the actor and the trail stored what the event carried, and if the two
-disagreed about who acted, nothing would error — the trail would simply name nobody. And the
-refused `UPDATE` is the append-only property observed rather than asserted: a trail a SQL client
-can edit is a second draft of history. Design in
-[ADR-0011](docs/decisions/0011-audit-trail-as-append-only-service.md).
-
-### Taking money back on purpose
-
-Dispute-service owns the chargeback workflow: a customer opens a case on their own settled payment,
-both sides plead in the file, and a support agent decides — refund or reject, with a reason either
-way. A refund is announced on `dispute-status-changed` and transaction-service reverses the capture
-out of its own stored owner digest, which never leaves that service: dispute-service holds no key
-and mints no identity, so it cannot move money itself without becoming the confused deputy the
-forwarded identity exists to prevent. The live check goes after the parts that only exist once a
-real case moves real money through real topics:
-
-```
-./scripts/verify-dispute-lifecycle.sh
-```
-
-It pays, settles, opens a case as the customer, and checks the things a service-level test cannot:
-that a second case on the same payment is refused, that a case on an unsettled hold and on another
-customer's payment are refused with different codes, that neither side's pleading nor the customer's
-own resolve button moves the case past its parties, and that the agent's refund actually reverses
-the capture — read back as `REVERSED` with the balance to prove it. Then that a second decision
-and late evidence are refused, and that open, evidence and resolution all reached the audit trail.
-
-Two things in there are worth more than the rest. The balance is the refund observed rather than
-decided: a 200 on resolve with no postings is a decision without a refund, and only reading the
-ledger shows it. And the ownership refusals are the forwarded identity working across a service
-boundary — transaction-service applying its own rule to a real caller's request, with this service
-translating the answer into its own vocabulary. Design in
-[ADR-0012](docs/decisions/0012-disputes-decided-by-support-refunded-by-ledger.md).
-
-### The browser a customer can use
-
-`http://localhost:3001` serves a static customer UI — no framework, no build step, no backend of
-its own. Sign in with a local login, register a profile with a synthetic identity check, fund,
-pay, issue and freeze cards, and open disputes: every button calls the gateway the verify scripts
-call, with a fresh idempotency key per click and the correlation id on every refusal. The token
-lives in memory and dies with the tab; staff views do not exist here by design. The live check
-goes after the parts that only exist in a browser:
-
-```
-./scripts/verify-frontend-lifecycle.sh
-```
-
-It proves the three-way origin agreement (nginx serves it, the gateway allows it, Keycloak lists
-it), that the preflight answers the UI's origin with the payment headers, that the UI's exact
-calls move money, and that the served files carry no secrets. The password grant it uses is fenced
-to local development — production moves to Authorization Code with PKCE in a single `login`
-method. Design in [ADR-0013](docs/decisions/0013-static-customer-ui.md).
-
-For staff views and the full dashboard, `frontend/fintech-dashboard/` is a React + TypeScript
-application covering every role (analyst queue, audit trail, settlement, notifications) against
-the same gateway APIs — see its README. It shares one design system (CSS tokens plus
-`components/ui` primitives: page headers, stat cards, toolbar, alerts, timeline, modal, and
-table/loading/empty/error states), groups navigation by Overview / Money / Risk & Compliance /
-Operations with the sidebar limited to the caller's roles, and leads with a dashboard balance
-hero plus a security-watch panel. The static UI above remains the customer surface the
-verify script checks.
-
-### How a request is authenticated
-
-```
-client ──JWT──▶ api-gateway ──signed headers──▶ service
-                 │                                 │
-                 │ verifies signature, issuer,     │ verifies HMAC over the identity,
-                 │ audience, algorithm, freshness  │ then reads CurrentCaller
-                 │ authorises the path against     │
-                 │ realm_access.roles              │
-```
-
-The gateway is the only place a token is ever read. A service receives six `X-Internal-Identity-*`
-headers, HMAC-signed, and either the signature verifies or the request is `401`. Headers a client
-sends with those names are stripped at the gateway, so a caller cannot assert a role. See
-[ADR-0004](docs/decisions/0004-jwt-verified-at-the-gateway.md) for why, and
-[docs/security.md](docs/security.md) for the current gaps.
-
-### A note on the JDK
-
-The build requires **JDK 21 or newer** and refuses to run on anything older, with a message saying
-so. If `make doctor` reports a lower version:
+The static UI's Node tests run with `make web-test`. Maven's `test` and `verify` include Testcontainers
+tests, so a running Docker daemon is required even though a Compose stack is not:
 
 ```bash
-export JAVA_HOME=$(brew --prefix openjdk)/libexec/openjdk.jdk/Contents/Home
+./mvnw -B -ntp test
+./mvnw -B -ntp verify
+make contract          # Docker-backed contract tests plus dashboard schema tests
+make quality           # verify plus formatting (formatter runs in Docker)
+make check             # quality plus Compose secret-isolation checks
 ```
 
-Do not rely on `/usr/libexec/java_home -v 21` on macOS when no matching JDK is registered with the
-system — it will return a Java 8 path without complaining. `make doctor` checks what Maven will
-actually use rather than what the system claims is installed.
-
----
-
-## Repository layout
-
-```
-pom.xml                      Maven reactor, dependency and plugin management
-platform/
-  platform-common/           Transport-agnostic contracts: errors, events, pagination, metrics tags
-  platform-common-web/       Servlet cross-cutting web behaviour: correlation id, error responses
-contracts/                 Shared wire-contract fixtures (HTTP + events), consumed on both sides
-services/
-  api-gateway/               Reactive ingress (Netty). Routes, JWT verification, rate limiting
-  auth-service/              Keycloak-backed authentication and token issuance
-  customer-service/          Customer profiles, addresses, KYC state
-  card-service/              Card and token lifecycle
-  transaction-service/       Payments, transfers, ledger, settlement, idempotency
-  fraud-service/             Rules, scoring, velocity checks, analyst alert queue
-  notification-service/      Email, SMS and push delivery
-  audit-service/             Append-only regulatory audit trail
-  dispute-service/           Chargebacks and disputes
-infrastructure/
-  docker/                    Shared service image, Postgres bootstrap
-  kafka/                     Topic catalogue (single source of truth)
-  prometheus/                Scrape config and alert rules
-  grafana/                   Provisioned datasource and dashboards
-  helm/fintech/              Kubernetes chart: services, secrets, network policies, PKI
-  sample-data/               Synthetic fixtures, loaded only when asked
-frontend/
-  fintech-dashboard/         React + TypeScript dashboard for all roles (see its README)
-docs/
-  architecture.md            Why the system is shaped this way
-  security.md                Threat model and the controls that answer it
-  deployment.md              What changes between this compose file and production
-  performance.md             Measured baseline, knobs, bottlenecks, and what local numbers do not prove
-  slo.md                     The two objectives and their burn-rate alerts
-  runbooks/                  Incident procedures with copy-paste triage
-  decisions/                 Architecture decision records
-scripts/
-  bootstrap.sh               Generates .env with random secrets
-  check-secret-isolation.sh  Asserts no service is handed another component's secret
-  get-token.sh               Prints an access token for a local identity
-  verify-card-lifecycle.sh   Asserts the card lifecycle end to end against a running stack
-  verify-payment-lifecycle.sh  Asserts funding, a payment, and replay, end to end
-  verify-fraud-lifecycle.sh    Asserts scoring, the digest join, and the analyst queue, end to end
-  verify-settlement-lifecycle.sh  Asserts the period statement, its immutability, and a worked finding, end to end
-  verify-notification-lifecycle.sh  Asserts the message, the delivery log's access rules, and the retry, end to end
-  verify-audit-lifecycle.sh  Asserts the trail row, its access rules, and its immutability, end to end
-  verify-dispute-lifecycle.sh  Asserts the case, the refund through the ledger, and the trail, end to end
-  verify-frontend-lifecycle.sh  Asserts the served UI, the preflight, and the UI's calls, end to end
-  chaos-degraded-lifecycle.sh  Stops customer-service and kafka in turn; asserts fast fail-closed refusals, authorisation without a broker, and recovery
-  load-smoke.sh  Drives a bounded burst of payments; asserts latency bound, zero errors, exact money and a balanced ledger
-  backup-postgres.sh  Dumps every service database; restores with --restore (databases must be empty)
-  wait-for-http.sh           Polls an endpoint until it answers
-```
-
-The whole build is one Maven reactor, but **nothing forces a service to be built or deployed
-together**. Modules that more than one service needs live in `platform/`; anything used by exactly
-one service stays in that service's module. That is the line between a shared library and a
-distributed monolith.
-
----
-
-## How a payment moves through the system
-
-```
-                 ┌──────────────┐
-   client ──────▶│  api-gateway │  JWT verified here, nowhere else
-                 └──────┬───────┘
-                        │ routes by path
-        ┌───────────────┼───────────────┬──────────────┐
-        ▼               ▼               ▼              ▼
- ┌────────────┐  ┌──────────────┐  ┌───────────┐  ┌──────────────┐
- │   auth     │  │  customer    │  │   card    │  │ transaction  │
- └────────────┘  └──────────────┘  └───────────┘  └──────┬───────┘
-                                                              │ publishes
-                                                              ▼
-                                                   ┌────────────────────┐
-                                                   │       Kafka        │
-                                                   └─────────┬──────────┘
-                          ┌──────────────┬─────────────────┼──────────────┐
-                          ▼              ▼                 ▼              ▼
-                   ┌────────────┐ ┌─────────────┐ ┌──────────────┐ ┌────────────┐
-                   │   fraud    │ │ notification│ │    audit     │ │  dispute   │
-                   └────────────┘ └─────────────┘ └──────────────┘ └────────────┘
-```
-
-Synchronous calls where the caller needs an answer now. Everything else is an event, so that a slow
-or unavailable fraud check degrades the decision rather than failing the payment outright, and so
-that audit, notification and dispute handling cannot slow down the authorisation path.
-
-Fraud is the sharpest case. A payment is authorised on Phase 5's rules and scored afterwards: the
-fraud engine is on no payment's critical path, so it can be slow, down or deploying without payments
-noticing. What that costs is that a payment can be authorised and then declined later, and what pays
-for it is the analyst queue and the dashboard that make the late decision someone's job. See
-[ADR-0008](docs/decisions/0008-asynchronous-advisory-fraud-scoring.md).
-
-Each service owns its own PostgreSQL database and its own role. There are no cross-database joins,
-and a service cannot read another service's tables even if it is fully compromised. See
-[ADR-0002](docs/decisions/0002-database-per-service.md).
-
----
-
-## Build and verification
+With the local stack running, the live lifecycle and load checks are:
 
 ```bash
-make test          # unit tests only, no Docker needed
-make contract      # wire-contract tests: OpenAPI specs, shared fixtures, event envelopes
-make verify        # compile, test, and write the coverage report
-make quality       # verify, plus assert formatting
-make check         # what a change must pass before it is proposed
-make coverage      # coverage summary per module
-make format        # reformat sources
+make verify-live        # lifecycle checks plus degraded-mode checks
+make load-smoke
 ```
 
-Against a running stack (`make up` first — these are live checks, not part
-of `make check`):
+These live checks create synthetic Keycloak users and application rows in the current Compose
+volumes. They do not clean up transaction, audit, or closed-settlement history. Run them only against
+local disposable/test data, never against a production environment. If you need a clean test database,
+use a disposable stack; `make clean-all` deletes the current Compose volumes and is destructive.
+
+`make helm-template` lints/renders the Helm chart using throwaway values. `make check-prometheus`
+validates scrape and alert configuration using the Prometheus container. These are verification
+commands, not production deployment approval.
+
+## Docker Compose notes
+
+Compose is for local development only: plaintext service traffic, a single Kafka broker, synthetic
+Keycloak users, loopback-published ports, and local secrets. `make setup` is required before the first
+start. `make down` retains data; `make clean-all` deletes Compose volumes. Do not use the local stack
+as an internet-facing deployment.
+
+## Production deployment and current blockers
+
+The Helm chart deploys the ten backend services. PostgreSQL, Redis, Kafka, an identity provider,
+monitoring, ingress/TLS, and the frontend are external or absent; the chart deliberately does not
+create an ingress with a placeholder host. Chart validation is:
 
 ```bash
-make verify-live   # all lifecycle checks end to end, chaos degraded-mode last
-make load-smoke    # bounded payment burst: latency bound, zero errors, exact ledger
-make helm-template # lint, render and schema-validate the Kubernetes chart (no cluster needed)
+make helm-template
 ```
 
-`make contract` checks the agreements between services rather than the
-services themselves: each contracted service serves an OpenAPI document with
-its paths and DTO property names pinned, the synchronous calls
-(card→customer, dispute→transaction) share one JSON fixture consumed on
-both sides (producer DTO test plus stub-server adapter test), one Kafka
-event pair is serialised by the producer type and parsed by the real
-consumer types, and the React dashboard parses the same fixtures with Zod.
-A renamed field breaks the producer side first. See
-[ADR-0014](docs/decisions/0014-wire-contracts-without-a-broker.md) and
-[contracts/README.md](contracts/README.md). Docker daemon required for the
-container-backed tests, no compose stack.
-
-`make check` is the gate. It runs `quality` and then `check-secrets`, which renders the compose file
-and asserts that no application container is given the Postgres superuser password, the Keycloak
-admin password or the Grafana password — the mistake that `env_file: .env` on a shared service
-anchor would introduce silently.
-
-Formatting runs inside the pinned `maven:3.9.16-eclipse-temurin-21` image rather than on your
-host JDK. The formatter reaches into javac internals, and the current release does not understand
-the compiler in a current JDK; running it in the same image the Docker build uses also means it
-cannot reformat code differently on one machine than on another.
+An eventual deployment command will take an externally managed values/secrets source, for example:
 
 ```bash
-make check-secrets        # secret isolation invariants
-make check-prometheus     # promtool validates scrape config and alert rules
+helm upgrade --install fintech infrastructure/helm/fintech \
+  -f <externally-managed-production-values.yaml>
 ```
 
----
+This command is **not** a safe production procedure yet. The chart currently emits Kubernetes Secret
+resources from Helm values (which are also retained in Helm release state); it has no external-secret
+reference integration. It also has no database migration job, ingress, production frontend, or
+exercised rollback/restore procedure. Its optional PKI template provisions a self-signed issuer, but
+the Java services do not yet use client certificates: the shared HMAC identity key remains
+load-bearing. NetworkPolicy egress and Kafka/database/Redis transport security also require production
+work.
 
-## Local infrastructure notes
+Before any real deployment, an operator must at minimum:
 
-Things that are deliberately *not* what production looks like, so nobody mistakes them later:
+1. Provide managed PostgreSQL databases/roles, Redis, Kafka with authentication/ACLs and TLS, and a
+   production identity provider with the exact issuer, audience, JWKS, and registration-client setup.
+2. Configure a secret manager/external-secret integration, distinct per-service database credentials,
+   encryption keys, and Kubernetes secret-at-rest protections. Do not use local realm credentials.
+3. Build and publish immutable images; configure registry and tags; run schema migrations as a
+   controlled pre-deploy job; verify migration and rollback compatibility.
+4. Implement gateway TLS termination, production CORS origins, rate limiting/WAF controls, and the
+   production browser's Authorization Code + PKCE flow. Complete Java mTLS and restrict network
+   egress before relying on the shared identity-signing key boundary.
+5. Deploy/secure the frontend and monitoring, validate probes and graceful shutdown, configure alert
+   routing, encrypted backups/PITR, and perform restore and incident-recovery exercises.
+6. Run security review, dependency scanning, end-to-end tests against the intended infrastructure,
+   and an approved deployment rehearsal. No live deployment has been performed by this repository.
 
-- **Plaintext everywhere.** No TLS between containers. Production terminates TLS at the ingress and
-  uses mTLS service to service. See [docs/deployment.md](docs/deployment.md).
-- **Bound to `127.0.0.1` only.** Every published port is loopback, so the stack is not reachable
-  from the local network.
-- **One Kafka broker, replication factor 1.** Production uses three brokers across availability
-  zones. The `1`s in the compose file are local-dev concessions.
-- **One shared local password for the service database roles.** The isolation that matters is the
-  separate roles, not the password. In Kubernetes each role gets its own secret, so revoking one
-  service cannot be undone by knowing another's credentials.
-- **Postgres and Redis exporters are not wired up yet.** Declaring scrape jobs for containers that
-  do not exist would create permanently firing targets, and alerts that always fire are alerts
-  everybody ignores.
-- **A shared signing key, not mTLS.** The gateway signs the identity it forwards with an HMAC key
-  that every service holds, so any service can mint an identity for any user. That is a deliberate
-  interim step: Phase 15 replaces it with mutual TLS between the gateway and each service, at which
-  point the key stops being load-bearing. See [ADR-0004](docs/decisions/0004-jwt-verified-at-the-gateway.md).
-- **Operational endpoints skip identity verification.** A service answers `/actuator/health` and
-  `/actuator/prometheus` without a signed identity, because Docker cannot present one and Prometheus
-  cannot either. Everything else on a service, including `/actuator/env` and `/actuator/heapdump`,
-  requires a verified identity and returns `401` without it.
-- **A missing signing key means a service trusts nobody.** It does not mean a service trusts
-  everybody: the verification filter is not registered at all, so every protected path is `401`. There
-  is no setting that turns verification off while leaving the service serving.
+## Troubleshooting
 
----
+- **Maven reports Java 8 or an unsupported JDK:** point `JAVA_HOME` to JDK 21+ and rerun `make doctor`.
+- **Docker commands cannot connect:** start Docker Engine/Desktop; Compose file validation alone does
+  not mean the daemon is available.
+- **Compose reports a required variable:** run `make setup`; inspect variable names in `.env.example`
+  without pasting secret values into logs or issues.
+- **PostgreSQL refuses a service after changing `.env`:** changing `SERVICE_DB_PASSWORD` does not
+  rotate existing database roles. Use the documented rotation procedure; do not delete volumes as a
+  first response.
+- **JWT issuer/audience is rejected:** compare the token `iss`/`aud` with `KEYCLOAK_ISSUER`,
+  `KEYCLOAK_API_AUDIENCE`, and the imported realm/client configuration. Realm import does not
+  overwrite an existing realm.
+- **Registration fails while login works:** check the `fintech-registration` client, its service
+  account permissions, and the matching `KEYCLOAK_ADMIN_CLIENT_SECRET`; the client is intentionally
+  not part of the committed development realm export.
+- **A schema validation/migration error follows a clean start:** confirm the database is empty only
+  when intended and inspect Flyway logs. The Postgres init scripts do not rerun against an existing
+  volume.
 
-## The sixteen phases
+## Repository map
 
-| # | Phase | State |
-| --- | --- | --- |
-| 1 | Monorepo, module structure, CI skeleton, local stack, observability foundations | **done** |
-| 2 | Keycloak realm, JWT issuance, gateway verification, per-route authorisation | **done** |
-| 3 | Customer and KYC domain, PII handling | **done** |
-| 4 | Card issuing, tokenisation, PAN never stored | **done** |
-| 5 | Transaction domain, double-entry ledger, idempotency | **done** |
-| 6 | Fraud engine, rules and scoring | **done** |
-| 7 | Settlement, reconciliation, reversals | **done** |
-| 8 | Notifications | **done** |
-| 9 | Audit trail and regulatory reporting | **done** |
-| 10 | Disputes and chargebacks | **done** |
-| 11 | Web frontend | **done** — static customer UI (`web/`) plus React + TypeScript dashboard for all roles (`frontend/fintech-dashboard/`) |
-| 12 | Contract and integration testing | **done** — OpenAPI contracts on all six servlet services, shared fixtures (both sync calls, one event pair, dashboard parsing), `make contract` gate; see ADR-0014 |
-| 13 | Resilience: circuit breakers, retries, chaos | **done** — breakers + bounded retry on both sync hops, identity-keyed gateway rate limiting, chaos script proving degraded-not-dead live; see ADR-0015 |
-| 14 | Performance and load testing | **done** — smoke loader (`make load-smoke`) with measured p95 baseline, exact-money and journal assertions; bounds documented in `docs/performance.md` |
-| 15 | Kubernetes, Helm, network policy, secrets | **done** — Helm chart (10 services, per-service secrets, probes, bounds), default-deny NetworkPolicies, provisioned PKI; Java mTLS migration designed in ADR-0016 |
-| 16 | Production hardening, runbooks, SLOs | **done** — incident runbooks, SLOs with burn-rate alerts, backup/restore, rotation procedures; see `docs/runbooks/` |
-
----
-
-## Documentation
-
-- [docs/architecture.md](docs/architecture.md) — the shape of the system and why
-- [docs/performance.md](docs/performance.md) — measured baseline, knobs, bottlenecks, and what local numbers do not prove
-- [docs/slo.md](docs/slo.md) — the two objectives and their burn-rate alerts
-- [docs/runbooks/](docs/runbooks/) — incident procedures with copy-paste triage
-- [docs/security.md](docs/security.md) — threat model and controls
-- [docs/decisions/0005-pii-encrypted-at-rest.md](docs/decisions/0005-pii-encrypted-at-rest.md) —
-  why personal data is encrypted per customer, and what that costs
-- [docs/decisions/0006-card-tokenisation.md](docs/decisions/0006-card-tokenisation.md) —
-  why card-service's database cannot hold a card number, and what that costs
-- [docs/decisions/0007-double-entry-ledger-and-idempotency.md](docs/decisions/0007-double-entry-ledger-and-idempotency.md)
-- [docs/decisions/0008-asynchronous-advisory-fraud-scoring.md](docs/decisions/0008-asynchronous-advisory-fraud-scoring.md)
-  — why fraud scores after the payment rather than before it, and what that costs
-- [docs/decisions/0010-notification-delivery-and-retry.md](docs/decisions/0010-notification-delivery-and-retry.md)
-  — why a consumed fact becomes exactly one message, why a failed send never fails the event, and
-  why there is no customer route to the delivery log
-- [docs/decisions/0011-audit-trail-as-append-only-service.md](docs/decisions/0011-audit-trail-as-append-only-service.md)
-  — why the trail is a separate service, why append-only is a database trigger rather than a
-  convention, and why the trail holds digests instead of subjects
-- [docs/decisions/0012-disputes-decided-by-support-refunded-by-ledger.md](docs/decisions/0012-disputes-decided-by-support-refunded-by-ledger.md)
-  — why the refund is announced rather than called, why only the customer opens, and why the audit
-  actor is a keyless hash instead of a shared digest
-- [docs/decisions/0013-static-customer-ui.md](docs/decisions/0013-static-customer-ui.md)
-  — why the UI is static files with no backend, why the password grant is fenced to local
-  development, and why the token lives in memory
-- [docs/decisions/0014-wire-contracts-without-a-broker.md](docs/decisions/0014-wire-contracts-without-a-broker.md)
-  — why wire contracts are shared fixtures consumed on both sides instead of a broker,
-  and why the OpenAPI assertions pin names rather than snapshots
-- [docs/decisions/0015-breakers-limits-and-practiced-outages.md](docs/decisions/0015-breakers-limits-and-practiced-outages.md)
-  — why breakers pair with retries and timeouts as a triple, why limits are keyed by
-  identity, and why chaos is practiced live while trip dynamics stay in unit tests
-- [docs/decisions/0016-mtls-migration-and-pki.md](docs/decisions/0016-mtls-migration-and-pki.md)
-  — why the PKI is provisioned while the Java migration waits for a live peer,
-  and the dual-trust sequence that retires the shared HMAC key
-- [docs/deployment.md](docs/deployment.md) — local versus production
-- [docs/decisions/](docs/decisions/) — architecture decision records
+```text
+services/                 ten Spring Boot services
+platform/                 shared contracts, identity, errors, and web behavior
+contracts/                shared API/event fixtures
+web/                      static customer UI served in local Compose
+frontend/fintech-dashboard/ React + TypeScript dashboard source
+infrastructure/docker/    service image and PostgreSQL bootstrap
+infrastructure/helm/      backend Kubernetes chart
+infrastructure/keycloak/  local-only realm and test users
+infrastructure/kafka/     Kafka topic catalogue
+infrastructure/prometheus/, infrastructure/grafana/  local observability
+scripts/                  bootstrap, backup, lifecycle, and smoke checks
+docs/                     architecture, security, deployment, runbooks, ADRs
+```

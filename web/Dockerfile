@@ -1,11 +1,9 @@
-# Customer web UI: static files on nginx. No build step, no bundler, no secrets.
-#
-# There is deliberately no `npm run build` here. The app is dependency-free HTML/CSS/vanilla JS,
-# so the image copies files rather than compiling them — which means the bytes served are the
-# bytes reviewed, and a compromised build cache cannot inject anything into them.
-FROM nginx:1.29.3-alpine
+# Unprivileged variant of the official image: nginx runs as uid 101, not root, so a bug in the
+# file server does not hand out a root shell in the container.
+FROM nginxinc/nginx-unprivileged:1.29.3-alpine
 
 COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY security-headers.conf /etc/nginx/snippets/security-headers.conf
 COPY app/ /usr/share/nginx/html/
 
-EXPOSE 80
+EXPOSE 8080

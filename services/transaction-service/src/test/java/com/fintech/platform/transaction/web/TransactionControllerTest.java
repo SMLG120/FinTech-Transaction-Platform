@@ -4,6 +4,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
@@ -62,7 +63,7 @@ import org.springframework.test.web.servlet.request.RequestPostProcessor;
  */
 @WebMvcTest(TransactionController.class)
 @AutoConfigureMockMvc
-@Import({WebAutoConfiguration.class, CurrentCaller.class})
+@Import({WebAutoConfiguration.class, CurrentCaller.class, TransactionAuthorization.class})
 class TransactionControllerTest {
 
     private static final String SIGNING_KEY = "b2ab932a72634cbd70fa5a5182b10d07ac8223ea87e101c1c0fb98d65b3b9801";
@@ -98,9 +99,44 @@ class TransactionControllerTest {
     @MockitoBean
     private SubjectDigester digester;
 
+    @MockitoBean
+    private com.fintech.platform.transaction.config.PaymentProperties paymentProperties;
+
     @BeforeEach
     void stubTheCaller() {
         when(digester.digestOf(SUBJECT)).thenReturn(OWNER_DIGEST);
+        when(paymentProperties.isSandbox()).thenReturn(true);
+    }
+
+    // ------------------------------------------------------------ sandbox-only money paths
+
+    @Test
+    @DisplayName("self-funding is refused outside a sandbox, before anything is posted")
+    void fundingIsSandboxOnly() throws Exception {
+        when(paymentProperties.isSandbox()).thenReturn(false);
+
+        mvc.perform(post("/api/v1/accounts/fund")
+                        .with(signedAsCustomer())
+                        .header("Idempotency-Key", "fund-key")
+                        .param("amount", "100.00")
+                        .param("currency", "GBP"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("SANDBOX_ONLY"));
+
+        verifyNoInteractions(payments);
+    }
+
+    @Test
+    @DisplayName("the payer's reverse goes through the guarded path, never the dispute-refund one")
+    void payerReversalUsesGuardedPath() throws Exception {
+        when(transactions.reverseRequestedByPayer(TRANSACTION_ID, OWNER_DIGEST))
+                .thenThrow(TransactionErrorCodes.SETTLED_REFUND_REQUIRES_DISPUTE.exception());
+
+        mvc.perform(post("/api/v1/transactions/" + TRANSACTION_ID + "/reverse").with(signedAsCustomer()))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error").value("SETTLED_REFUND_REQUIRES_DISPUTE"));
+
+        org.mockito.Mockito.verify(transactions, org.mockito.Mockito.never()).reverse(any(), any());
     }
 
     // ------------------------------------------------------------ replayed responses
@@ -273,6 +309,34 @@ class TransactionControllerTest {
     }
 
     @Test
+    @DisplayName("a support agent cannot create a payment")
+    void supportCannotCreatePayment() throws Exception {
+        mvc.perform(post("/api/v1/transactions")
+                        .with(signedAs("SUPPORT_AGENT"))
+                        .header("Idempotency-Key", "support-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(createBody("25.00")))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("FORBIDDEN"));
+
+        verifyNoInteractions(payments);
+    }
+
+    @Test
+    @DisplayName("a support agent cannot fund an account")
+    void supportCannotFundAccount() throws Exception {
+        mvc.perform(post("/api/v1/accounts/fund")
+                        .with(signedAs("SUPPORT_AGENT"))
+                        .header("Idempotency-Key", "support-fund-key")
+                        .param("amount", "100.00")
+                        .param("currency", "GBP"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("FORBIDDEN"));
+
+        verifyNoInteractions(payments);
+    }
+
+    @Test
     @DisplayName("the caller comes from the verified identity, not the request")
     void callerComesFromTheIdentity() throws Exception {
         when(payments.createPayment(any(), any(), any(), any(), any()))
@@ -314,8 +378,12 @@ class TransactionControllerTest {
     }
 
     private static RequestPostProcessor signedAsCustomer() {
+        return signedAs("CUSTOMER");
+    }
+
+    private static RequestPostProcessor signedAs(String... roles) {
         return request -> {
-            Map<String, String> headers = CODEC.headersFor(identityOf(SUBJECT, List.of("CUSTOMER")));
+            Map<String, String> headers = CODEC.headersFor(identityOf(SUBJECT, List.of(roles)));
             headers.forEach(request::addHeader);
             return request;
         };

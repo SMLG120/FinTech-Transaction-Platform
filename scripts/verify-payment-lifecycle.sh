@@ -30,11 +30,15 @@ set -euo pipefail
 readonly GATEWAY="http://localhost:8080"
 readonly KEYCLOAK="http://localhost:8180"
 readonly ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "${ROOT_DIR}/scripts/private-temp.sh"
+trap fintech_cleanup_private_tmp EXIT
 readonly ENV_FILE="${ROOT_DIR}/.env"
-readonly DEV_PASSWORD="fintech-dev-only"
-readonly BODY_FILE=/tmp/pay-body.json
-readonly FIRST_FILE=/tmp/pay-first.json
-readonly SECOND_FILE=/tmp/pay-second.json
+DEV_PASSWORD="$(fintech_seed_user_password "${ENV_FILE}")" || exit 1
+readonly DEV_PASSWORD
+readonly BODY_FILE="${FINTECH_TMP_DIR}/pay-body.json"
+readonly FIRST_FILE="${FINTECH_TMP_DIR}/pay-first.json"
+readonly SECOND_FILE="${FINTECH_TMP_DIR}/pay-second.json"
+readonly PAY_HEADERS_FILE="${FINTECH_TMP_DIR}/pay-headers.txt"
 
 # A distinct pair per run, so a second run of this script exercises a fresh key rather than replaying
 # the first run's and appearing to pass for the wrong reason.
@@ -81,7 +85,6 @@ expect_status() {
   got="$(request "$method" "$url" "$body" "$token" "$key")"
   if [[ "$got" != "$want" ]]; then
     printf '  expected %s, got %s\n' "$want" "$got"
-    cat "$BODY_FILE"
     fail "$method $url"
   fi
 }
@@ -104,9 +107,9 @@ available_now() {
 
 header_value() {
   local name="$1"
-  python3 - "$name" <<'PY'
+  python3 - "$name" "$PAY_HEADERS_FILE" <<'PY'
 import re, sys
-raw = open('/tmp/pay-headers.txt', encoding='utf-8', errors='replace').read()
+raw = open(sys.argv[2], encoding='utf-8', errors='replace').read()
 blocks = re.split(r'\r?\n\r?\n', raw)
 last = blocks[-1] if blocks[-1].strip() else (blocks[-2] if len(blocks) > 1 else '')
 for line in last.splitlines():
@@ -133,13 +136,13 @@ kc_admin_token() {
   curl -s -X POST "${KEYCLOAK}/realms/master/protocol/openid-connect/token" \
     -d grant_type=password -d client_id=admin-cli \
     --data-urlencode "username=$(env_value KEYCLOAK_ADMIN_USERNAME)" \
-    --data-urlencode "password=$(env_value KEYCLOAK_ADMIN_PASSWORD)" |
+    --data-urlencode "password@$(fintech_keycloak_admin_password_file "$ENV_FILE")" |
     python3 -c 'import json,sys; print(json.load(sys.stdin).get("access_token", ""))'
 }
 
 kc_token() {
   curl -s -X POST "${KEYCLOAK}/realms/$(env_value KEYCLOAK_REALM)/protocol/openid-connect/token" \
-    -d grant_type=password -d client_id=fintech-web \
+    -d grant_type=password -d client_id=fintech-cli \
     --data-urlencode "username=$1" --data-urlencode "password=${DEV_PASSWORD}" |
     python3 -c 'import json,sys; print(json.load(sys.stdin).get("access_token", ""))'
 }
@@ -167,16 +170,16 @@ kc_ensure_user() {
     # firstName/lastName are required by the realm's user profile, and a user created without them
     # authenticates to "Account is not fully set up" rather than to a token. The payload goes through a
     # file so the JSON needs no escaping inside a shell string.
-    cat > /tmp/kc-new-user.json <<JSON
+    cat > "${FINTECH_TMP_DIR}/kc-new-user.json" <<JSON
 {"username":"${username}","enabled":true,"email":"${username}","emailVerified":true,
  "firstName":"Pay","lastName":"Check",
  "credentials":[{"type":"password","value":"${DEV_PASSWORD}","temporary":false}]}
 JSON
-    status="$(curl -s -o /tmp/kc-body.json -w '%{http_code}' -X POST \
+    status="$(curl -s -o "${FINTECH_TMP_DIR}/kc-body.json" -w '%{http_code}' -X POST \
       "${KEYCLOAK}/admin/realms/${realm}/users" \
       -H "Authorization: Bearer ${admin}" -H 'Content-Type: application/json' \
-      -d @/tmp/kc-new-user.json)"
-    [[ "$status" == "201" ]] || { cat /tmp/kc-body.json; fail "creating local dev user ${username}"; }
+      -d @"${FINTECH_TMP_DIR}/kc-new-user.json")"
+    [[ "$status" == "201" ]] || fail "creating local dev user ${username}"
     user_id="$(kc_user_id "$username")"
   fi
   [[ -n "$user_id" ]] || fail "could not resolve the id of ${username}"
@@ -186,10 +189,10 @@ JSON
   # {id, name} -- it answers 409 "Role not found". Fetching the representation is the difference between
   # a user who can register and one who gets 403 INSUFFICIENT_ROLE.
   curl -s "${KEYCLOAK}/admin/realms/${realm}/roles/CUSTOMER" -H "Authorization: Bearer ${admin}" \
-    -o /tmp/kc-role.json
-  python3 -c "import json; json.dump([json.load(open('/tmp/kc-role.json'))], open('/tmp/kc-rolemap.json','w'))"
+    -o "${FINTECH_TMP_DIR}/kc-role.json"
+  fintech_json_array_file "${FINTECH_TMP_DIR}/kc-role.json" "${FINTECH_TMP_DIR}/kc-rolemap.json"
   curl -s -o /dev/null -X POST "${KEYCLOAK}/admin/realms/${realm}/users/${user_id}/role-mappings/realm" \
-    -H "Authorization: Bearer ${admin}" -H 'Content-Type: application/json' -d @/tmp/kc-rolemap.json
+    -H "Authorization: Bearer ${admin}" -H 'Content-Type: application/json' -d @"${FINTECH_TMP_DIR}/kc-rolemap.json"
 
   kc_token "$username" | grep -q . || fail "${username} cannot obtain a token after being created"
 }
@@ -303,16 +306,13 @@ expect_status 200 POST "${GATEWAY}/api/v1/accounts/fund?amount=500.00&currency=G
 pass "500.00 available, and the Idempotency-Key survived the gateway"
 
 step "Replaying the top-up, and comparing the bytes"
-curl -s -D /tmp/pay-headers.txt -o "$FIRST_FILE" -X POST "${GATEWAY}/api/v1/accounts/fund?amount=500.00&currency=GBP" \
+curl -s -D "$PAY_HEADERS_FILE" -o "$FIRST_FILE" -X POST "${GATEWAY}/api/v1/accounts/fund?amount=500.00&currency=GBP" \
   -H "Authorization: Bearer $TOKEN" -H "Idempotency-Key: ${FUND_KEY}"
 [[ "$(header_value Idempotency-Replayed)" == "true" ]] ||
   fail "the replay was not marked Idempotency-Replayed"
-curl -s -D /tmp/pay-headers.txt -o "$SECOND_FILE" -X POST "${GATEWAY}/api/v1/accounts/fund?amount=500.00&currency=GBP" \
+curl -s -D "$PAY_HEADERS_FILE" -o "$SECOND_FILE" -X POST "${GATEWAY}/api/v1/accounts/fund?amount=500.00&currency=GBP" \
   -H "Authorization: Bearer $TOKEN" -H "Idempotency-Key: ${FUND_KEY}"
-cmp -s "$FIRST_FILE" "$SECOND_FILE" ||
-  fail "the replayed body differs from the original:
-  first:  $(cat "$FIRST_FILE")
-  second: $(cat "$SECOND_FILE")"
+cmp -s "$FIRST_FILE" "$SECOND_FILE" || fail "the replayed response bytes differ from the original"
 python3 -c "import json,sys; json.load(open('$SECOND_FILE'))" ||
   fail "the replayed body is not a JSON document, so a client parsing it as an object would fail"
 pass "byte-identical replay, marked Idempotency-Replayed, and still a JSON document"
@@ -337,16 +337,13 @@ PAYMENT_BODY="$(payment_body 25.00 "${RUN_ID}-order-1")"
 expect_status 201 POST "${GATEWAY}/api/v1/transactions" "$PAYMENT_BODY" "$TOKEN" "$PAY_KEY"
 TX_ID="$(json 'd["id"]')"
 [[ "$(json 'd["status"]')" == "AUTHORIZED" ]] || fail "expected AUTHORIZED, got $(json 'd["status"]')"
-curl -s -D /tmp/pay-headers.txt -o "$FIRST_FILE" -X POST "${GATEWAY}/api/v1/transactions" \
+curl -s -D "$PAY_HEADERS_FILE" -o "$FIRST_FILE" -X POST "${GATEWAY}/api/v1/transactions" \
   -H "Authorization: Bearer $TOKEN" -H "Idempotency-Key: ${PAY_KEY}" \
   -H 'Content-Type: application/json' -d "$PAYMENT_BODY"
-curl -s -D /tmp/pay-headers.txt -o "$SECOND_FILE" -X POST "${GATEWAY}/api/v1/transactions" \
+curl -s -D "$PAY_HEADERS_FILE" -o "$SECOND_FILE" -X POST "${GATEWAY}/api/v1/transactions" \
   -H "Authorization: Bearer $TOKEN" -H "Idempotency-Key: ${PAY_KEY}" \
   -H 'Content-Type: application/json' -d "$PAYMENT_BODY"
-cmp -s "$FIRST_FILE" "$SECOND_FILE" ||
-  fail "the replayed payment differs from the original:
-  first:  $(cat "$FIRST_FILE")
-  second: $(cat "$SECOND_FILE")"
+cmp -s "$FIRST_FILE" "$SECOND_FILE" || fail "the replayed payment response bytes differ from the original"
 python3 -c "
 import json
 d = json.load(open('$SECOND_FILE'))
@@ -374,8 +371,7 @@ step "Refusing a payment the payer cannot cover"
 expect_status 422 POST "${GATEWAY}/api/v1/transactions" \
   "$(payment_body 900.00 "${RUN_ID}-order-2")" \
   "$TOKEN" "${RUN_ID}-declined"
-[[ "$(json 'd["status"]')" == "DECLINED" ]] ||
-  fail "expected a DECLINED payment, got $(cat "$BODY_FILE")"
+[[ "$(json 'd["status"]')" == "DECLINED" ]] || fail "expected a DECLINED payment"
 pass "422 with a DECLINED body, not a 201 that a status-code-only client would read as success"
 
 step "Settling, then reading it back"

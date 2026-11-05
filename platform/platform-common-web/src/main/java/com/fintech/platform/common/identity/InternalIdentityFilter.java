@@ -10,7 +10,6 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.slf4j.MDC;
 import org.springframework.util.AntPathMatcher;
 import org.springframework.web.filter.OncePerRequestFilter;
 
@@ -32,8 +31,6 @@ public class InternalIdentityFilter extends OncePerRequestFilter {
     private static final Logger log = LoggerFactory.getLogger(InternalIdentityFilter.class);
 
     static final String REQUEST_ATTRIBUTE = InternalIdentityFilter.class.getName() + ".identity";
-    static final String MDC_SUBJECT = "identitySubject";
-
     private static final String[] SIGNED_HEADERS = {
         InternalIdentityCodec.HEADER_SUBJECT,
         InternalIdentityCodec.HEADER_USERNAME,
@@ -69,18 +66,12 @@ public class InternalIdentityFilter extends OncePerRequestFilter {
             // The reason goes to the log, not the response: a caller that can distinguish an expired
             // signature from a malformed one learns which part of a forgery to correct.
             log.warn("rejected request with untrusted internal identity: {}", e.getMessage());
-            MDC.remove(MDC_SUBJECT);
             response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
             return;
         }
 
         request.setAttribute(REQUEST_ATTRIBUTE, identity);
-        MDC.put(MDC_SUBJECT, identity.subject());
-        try {
-            filterChain.doFilter(request, response);
-        } finally {
-            MDC.remove(MDC_SUBJECT);
-        }
+        filterChain.doFilter(request, response);
     }
 
     private boolean isExcluded(HttpServletRequest request) {

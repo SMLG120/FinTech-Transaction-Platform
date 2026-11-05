@@ -28,8 +28,12 @@ set -euo pipefail
 readonly GATEWAY="http://localhost:8080"
 readonly KEYCLOAK="http://localhost:8180"
 readonly ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "${ROOT_DIR}/scripts/private-temp.sh"
+trap fintech_cleanup_private_tmp EXIT
 readonly ENV_FILE="${ROOT_DIR}/.env"
-readonly DEV_PASSWORD="fintech-dev-only"
+DEV_PASSWORD="$(fintech_seed_user_password "${ENV_FILE}")" || exit 1
+readonly DEV_PASSWORD
+readonly BODY_FILE="${FINTECH_TMP_DIR}/card-body.json"
 
 # Subjects, kept separate so the two sides of the ownership test cannot collide.
 readonly CARDHOLDER="cardcheck-a@fintech.test"
@@ -40,14 +44,15 @@ pass() { printf '  \033[32mok\033[0m   %s\n' "$1"; }
 fail() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; exit 1; }
 step() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 
-# Expects an HTTP status; anything else is a failure with the body printed.
+# Expects an HTTP status; on failure it reports only the method and path, never a response body that
+# could contain the one-time card number.
 #
 # An empty token is a bug, not a request for "no credentials": a negative test that loses its token
 # and then borrows the cardholder's tests something else entirely and reports success. Pass "none"
 # to genuinely send no credentials.
 expect_status() {
   local want="$1" method="$2" url="$3" body="${4:-}" token="${5-$TOKEN}"
-  local args=(-s -o /tmp/card-body.json -w '%{http_code}' -X "$method" "$url")
+  local args=(-s -o "$BODY_FILE" -w '%{http_code}' -X "$method" "$url")
   if [[ "$token" == "none" ]]; then
     token=""
   elif [[ -z "$token" ]]; then
@@ -59,16 +64,15 @@ expect_status() {
   got="$(curl "${args[@]}")"
   if [[ "$got" != "$want" ]]; then
     printf '  expected %s, got %s\n' "$want" "$got"
-    cat /tmp/card-body.json
     fail "$method $url"
   fi
 }
 
-json() { python3 -c "import json,sys;d=json.load(open('/tmp/card-body.json'));print($1)"; }
+json() { python3 -c "import json,sys;d=json.load(open('${BODY_FILE}'));print($1)"; }
 
 # ---- Keycloak helpers -----------------------------------------------------------------------
-# Nothing here prints a secret. The admin token lives in a variable and the admin password is only
-# ever passed to curl's --data-urlencode, so it does not appear in a process listing on a shared box.
+# The admin password is read from a mode-600 temporary file in the private scratch directory; it is
+# not placed in curl's command-line arguments, and the directory is removed on exit.
 
 env_value() { grep -E "^$1=" "${ENV_FILE}" | head -1 | cut -d= -f2-; }
 
@@ -76,13 +80,13 @@ kc_admin_token() {
   curl -s -X POST "${KEYCLOAK}/realms/master/protocol/openid-connect/token" \
     -d grant_type=password -d client_id=admin-cli \
     --data-urlencode "username=$(env_value KEYCLOAK_ADMIN_USERNAME)" \
-    --data-urlencode "password=$(env_value KEYCLOAK_ADMIN_PASSWORD)" |
+    --data-urlencode "password@$(fintech_keycloak_admin_password_file "$ENV_FILE")" |
     python3 -c 'import json,sys; print(json.load(sys.stdin).get("access_token", ""))'
 }
 
 kc_token() {
   curl -s -X POST "${KEYCLOAK}/realms/$(env_value KEYCLOAK_REALM)/protocol/openid-connect/token" \
-    -d grant_type=password -d client_id=fintech-web \
+    -d grant_type=password -d client_id=fintech-cli \
     --data-urlencode "username=$1" --data-urlencode "password=${DEV_PASSWORD}" |
     python3 -c 'import json,sys; print(json.load(sys.stdin).get("access_token", ""))'
 }
@@ -103,10 +107,10 @@ kc_ensure_user() {
     # firstName and lastName are not decoration. The realm's user profile requires them, and a user
     # created without them authenticates to a 400 "Account is not fully set up" rather than to a
     # token, which reads as a broken realm rather than an incomplete create.
-    status="$(curl -s -o /tmp/kc-body.json -w '%{http_code}' -X POST "${KEYCLOAK}/admin/realms/${realm}/users" \
+    status="$(curl -s -o "${FINTECH_TMP_DIR}/kc-body.json" -w '%{http_code}' -X POST "${KEYCLOAK}/admin/realms/${realm}/users" \
       -H "Authorization: Bearer ${admin}" -H 'Content-Type: application/json' \
       -d "{\"username\":\"${username}\",\"enabled\":true,\"email\":\"${username}\",\"emailVerified\":true,\"firstName\":\"Card\",\"lastName\":\"Check\",\"credentials\":[{\"type\":\"password\",\"value\":\"${DEV_PASSWORD}\",\"temporary\":false}]}")"
-    [[ "$status" == "201" ]] || { cat /tmp/kc-body.json; fail "creating local dev user ${username}"; }
+    [[ "$status" == "201" ]] || fail "creating local dev user ${username}"
     user_id="$(curl -s "${KEYCLOAK}/admin/realms/${realm}/users?username=${username}&exact=true" \
       -H "Authorization: Bearer ${admin}" |
       python3 -c 'import json,sys; u=json.load(sys.stdin); print(u[0]["id"] if u else "")')"
@@ -117,27 +121,27 @@ kc_ensure_user() {
   # create is invisible until login, and login then answers "Account is not fully set up" -- which
   # points at the realm rather than at the one call that left the row half-written.
   curl -s "${KEYCLOAK}/admin/realms/${realm}/users/${user_id}" -H "Authorization: Bearer ${admin}" \
-    -o /tmp/kc-user.json
-  python3 - "$user_id" "$username" <<'PY' >/tmp/kc-user-fixed.json
+    -o "${FINTECH_TMP_DIR}/kc-user.json"
+  python3 - "$user_id" "$username" "${FINTECH_TMP_DIR}/kc-user.json" <<'PY' >"${FINTECH_TMP_DIR}/kc-user-fixed.json"
 import json, sys
-user = json.load(open('/tmp/kc-user.json'))
+user = json.load(open(sys.argv[3]))
 user.update(id=sys.argv[1], username=sys.argv[2], firstName="Card", lastName="Check",
             email=sys.argv[2], emailVerified=True, enabled=True)
 user.pop('userProfileMetadata', None)
-json.dump(user, open('/tmp/kc-user-fixed.json', 'w'))
+json.dump(user, sys.stdout)
 PY
   curl -s -o /dev/null -X PUT "${KEYCLOAK}/admin/realms/${realm}/users/${user_id}" \
-    -H "Authorization: Bearer ${admin}" -H 'Content-Type: application/json' -d @/tmp/kc-user-fixed.json
+    -H "Authorization: Bearer ${admin}" -H 'Content-Type: application/json' -d @"${FINTECH_TMP_DIR}/kc-user-fixed.json"
 
   # The role cannot be set in the create payload; Keycloak's admin API ignores realmRoles there and
   # wants a separate call with the full role representation, which it will not accept as a bare
   # {id, name} -- it answers 409 "Role not found". Fetching the representation is the difference
   # between a user who can register and one who gets 403 INSUFFICIENT_ROLE.
   curl -s "${KEYCLOAK}/admin/realms/${realm}/roles/${role}" -H "Authorization: Bearer ${admin}" \
-    -o /tmp/kc-role.json
-  python3 -c "import json; json.dump([json.load(open('/tmp/kc-role.json'))], open('/tmp/kc-rolemap.json','w'))"
+    -o "${FINTECH_TMP_DIR}/kc-role.json"
+  fintech_json_array_file "${FINTECH_TMP_DIR}/kc-role.json" "${FINTECH_TMP_DIR}/kc-rolemap.json"
   curl -s -o /dev/null -X POST "${KEYCLOAK}/admin/realms/${realm}/users/${user_id}/role-mappings/realm" \
-    -H "Authorization: Bearer ${admin}" -H 'Content-Type: application/json' -d @/tmp/kc-rolemap.json
+    -H "Authorization: Bearer ${admin}" -H 'Content-Type: application/json' -d @"${FINTECH_TMP_DIR}/kc-rolemap.json"
 
   kc_token "$username" | grep -q . || fail "${username} cannot obtain a token after being created"
 }
@@ -164,7 +168,7 @@ setup_customer() {
   token="$(kc_token "$username")"
   [[ -n "$token" ]] || return 1
 
-  status="$(curl -s -o /tmp/card-body.json -w '%{http_code}' -X POST "${GATEWAY}/api/v1/customers" \
+  status="$(curl -s -o "$BODY_FILE" -w '%{http_code}' -X POST "${GATEWAY}/api/v1/customers" \
     -H "Authorization: Bearer ${token}" -H 'Content-Type: application/json' \
     -d "$(register_body "$name" "$DOB" "user-${username}" "+447700900${RANDOM:0:3}" "$ADDRESS")")"
   case "$status" in
@@ -173,7 +177,7 @@ setup_customer() {
       # Already registered from an earlier run. Reuse it, but only if it is not a tombstone: erasure
       # scrubs the subject permanently, and a check that cannot tell the two apart reports a working
       # platform as broken.
-      status="$(curl -s -o /tmp/card-body.json -w '%{http_code}' "${GATEWAY}/api/v1/customers/me" \
+      status="$(curl -s -o "$BODY_FILE" -w '%{http_code}' "${GATEWAY}/api/v1/customers/me" \
         -H "Authorization: Bearer ${token}")"
       [[ "$status" == "200" ]] || return 1
       id="$(json 'd["id"]')" ;;
@@ -185,7 +189,7 @@ setup_customer() {
   # decided check again -- APPROVED and REJECTED both only accept a resubmission from EXPIRED. So an
   # already-decided customer is taken as it stands. Without this the second run of this script fails,
   # which is the worst possible property for a check that exists to be re-run.
-  status="$(curl -s -o /tmp/card-body.json -w '%{http_code}' "${GATEWAY}/api/v1/customers/me" \
+  status="$(curl -s -o "$BODY_FILE" -w '%{http_code}' "${GATEWAY}/api/v1/customers/me" \
     -H "Authorization: Bearer ${token}")"
   local existing
   existing="$(json 'd["kycStatus"]')"
@@ -194,7 +198,7 @@ setup_customer() {
     return 0
   fi
 
-  status="$(curl -s -o /tmp/card-body.json -w '%{http_code}' -X POST "${GATEWAY}/api/v1/customers/${id}/kyc" \
+  status="$(curl -s -o "$BODY_FILE" -w '%{http_code}' -X POST "${GATEWAY}/api/v1/customers/${id}/kyc" \
     -H "Authorization: Bearer ${token}" -H 'Content-Type: application/json' \
     -d "{\"documentReference\":\"${docref}\",\"printedName\":\"${name}\",\"expiryDate\":\"2035-01-01\",\"issuingCountry\":\"GB\",\"nationality\":\"GB\"}")"
   [[ "$status" == "200" ]] || return 1
@@ -254,15 +258,15 @@ expect_status 201 POST "${GATEWAY}/api/v1/cards" "{\"customerId\":\"${CUSTOMER_I
 CARD_NUMBER="$(json 'd["cardNumber"]')"
 CARD_ID="$(json 'd["card"]["id"]')"
 LAST4="$(json 'd["card"]["last4"]')"
-[[ "$CARD_NUMBER" =~ ^[0-9]{4}\ [0-9]{4}\ [0-9]{4}\ [0-9]{4}$ ]] || fail "unexpected card number format: ${CARD_NUMBER}"
-[[ "${CARD_NUMBER: -4}" == "$LAST4" ]] || fail "last4 ${LAST4} does not match the number issued"
-pass "card ${CARD_ID}, number ${CARD_NUMBER} shown exactly once"
+[[ "$CARD_NUMBER" =~ ^[0-9]{4}\ [0-9]{4}\ [0-9]{4}\ [0-9]{4}$ ]] || fail "issued card number format is invalid"
+[[ "${CARD_NUMBER: -4}" == "$LAST4" ]] || fail "issued card number does not match the stored last four"
+pass "card ${CARD_ID} issued; the number appeared only in the issuance response"
 
 step "Listing own cards, and confirming the number is not in the response"
 expect_status 200 GET "${GATEWAY}/api/v1/cards"
 COUNT="$(json 'len(d)')"
 [[ "$COUNT" -ge 1 ]] || fail "expected at least one card, got ${COUNT}"
-grep -q 'cardNumber' /tmp/card-body.json && fail "the list response contains a card number"
+grep -q 'cardNumber' "$BODY_FILE" && fail "the list response contains a card number"
 pass "${COUNT} card(s) listed, no card number anywhere in the payload"
 
 step "Reading the card back"
@@ -315,4 +319,4 @@ printf '    docker compose exec -T postgres psql -U fintech_cards -d fintech_car
 printf "      -c \"select last4, brand, status, left(token, 12) as token_prefix from cards;\"\n"
 
 printf '\n\033[32mPhase 4 lifecycle verified through the gateway.\033[0m\n'
-printf 'Card %s, number %s (shown once, never retrievable again).\n' "$CARD_ID" "$CARD_NUMBER"
+printf 'Card %s was issued; the one-time number is deliberately omitted from test output.\n' "$CARD_ID"

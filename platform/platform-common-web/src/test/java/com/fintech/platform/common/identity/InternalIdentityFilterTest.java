@@ -14,6 +14,7 @@ import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.slf4j.MDC;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 
@@ -53,6 +54,7 @@ class InternalIdentityFilterTest {
         assertThat(recorder.reachedChain).isTrue();
         assertThat(request.getAttribute(InternalIdentityFilter.REQUEST_ATTRIBUTE))
                 .isEqualTo(new InternalIdentity("sub", "user@fintech.test", List.of("CUSTOMER"), "cid", NOW));
+        assertThat(recorder.identitySubjectMdc).isNull();
     }
 
     @Test
@@ -199,10 +201,12 @@ class InternalIdentityFilterTest {
     private static final class Recorder implements FilterChain {
 
         private boolean reachedChain;
+        private String identitySubjectMdc;
 
         @Override
         public void doFilter(jakarta.servlet.ServletRequest request, jakarta.servlet.ServletResponse response) {
             reachedChain = true;
+            identitySubjectMdc = MDC.get("identitySubject");
         }
     }
 }

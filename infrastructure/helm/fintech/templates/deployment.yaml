@@ -57,6 +57,10 @@ spec:
               value: {{ $.Values.global.version | quote }}
             - name: LOG_FORMAT
               value: "ecs"
+            - name: SPRINGDOC_API_DOCS_ENABLED
+              value: "false"
+            - name: SPRINGDOC_SWAGGER_UI_ENABLED
+              value: "false"
             - name: SERVER_PORT
               value: {{ $svc.port | quote }}
             - name: JAVA_TOOL_OPTIONS
@@ -107,6 +111,14 @@ spec:
             {{- if $svc.transactionServiceUrl }}
             - name: TRANSACTION_SERVICE_URL
               value: {{ $svc.transactionServiceUrl | quote }}
+            {{- end }}
+            {{- if eq $name "auth-service" }}
+            - name: KEYCLOAK_ADMIN_BASE_URL
+              value: {{ required "services.auth-service.keycloakAdminBaseUrl is required" $svc.keycloakAdminBaseUrl | quote }}
+            - name: KEYCLOAK_ADMIN_CLIENT_ID
+              value: {{ required "services.auth-service.keycloakAdminClientId is required" $svc.keycloakAdminClientId | quote }}
+            - name: KEYCLOAK_REALM
+              value: {{ required "services.auth-service.keycloakRealm is required" $svc.keycloakRealm | quote }}
             {{- end }}
           # Secrets arrive as environment, never baked into the image. The
           # shared secret holds the interim shared values (redis password,

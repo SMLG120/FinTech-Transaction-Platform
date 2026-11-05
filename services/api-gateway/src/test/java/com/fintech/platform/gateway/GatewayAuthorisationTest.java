@@ -11,6 +11,7 @@ import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.reactive.AutoConfigureWebTestClient;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.core.env.Environment;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.reactive.server.WebTestClient;
@@ -51,6 +52,9 @@ class GatewayAuthorisationTest {
 
     @Autowired
     private org.springframework.cloud.gateway.config.GlobalCorsProperties corsProperties;
+
+    @Autowired
+    private Environment environment;
 
     @ParameterizedTest(name = "{0} as {1} is {2}")
     @CsvSource({
@@ -181,6 +185,18 @@ class GatewayAuthorisationTest {
     }
 
     @Test
+    @DisplayName("CORS config covers profile updates, erasure, card cancellation, and customer registration")
+    void cors_covers_supported_browser_writes() {
+        assertThat(environment.getProperty(
+                        "spring.cloud.gateway.server.webflux.globalcors.add-to-simple-url-handler-mapping"))
+                .isEqualTo("true");
+        var configs = corsProperties.getCorsConfigurations();
+        assertThat(configs.get("/api/**").getAllowedMethods())
+                .containsExactly("GET", "POST", "PUT", "DELETE", "OPTIONS");
+        assertThat(configs.get("/register").getAllowedMethods()).containsExactly("POST", "OPTIONS");
+    }
+
+    @Test
     @DisplayName("exactly the web UI origin is CORS-allowed, and never a wildcard")
     void cors_allows_only_the_ui_origin() {
         // The header behaviour belongs to Spring Cloud Gateway and is observed live; what this
@@ -191,6 +207,8 @@ class GatewayAuthorisationTest {
         assertThat(configs).containsKey("/api/**");
         var allowed = configs.get("/api/**").getAllowedOrigins();
         assertThat(allowed).containsExactly("http://localhost:3001");
+        assertThat(configs).containsKey("/register");
+        assertThat(configs.get("/register").getAllowedOrigins()).containsExactly("http://localhost:3001");
     }
 
     @Test

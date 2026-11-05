@@ -71,5 +71,7 @@ a routine operation.
 2. The affected lifecycle script (`verify-card-lifecycle.sh`,
    `verify-payment-lifecycle.sh`, …) — authentication and data access
    actually work, not just the healthchecks.
-3. Delete the old value from shell history and any scratch files
-   (`history -d`, shred `/tmp/kc-body.json`-style leftovers).
+3. Delete the old value from shell history and any scratch files from older
+   scripts (`history -d`, securely remove leftover `/tmp/kc-body.json`-style
+   files). Current lifecycle scripts use a private temporary directory and
+   remove it on exit.

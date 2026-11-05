@@ -12,8 +12,8 @@
 #   * the preflight is answered with the UI's origin and the headers the UI sends. A missing
 #     Idempotency-Key in the allow-list fails silently in development (curl never preflights) and
 #     loudly in every browser, so only an Origin-bearing request proves it;
-#   * the UI's calls work end to end: password grant, balance, fund, pay with a fresh
-#     Idempotency-Key. These are the same calls app.js makes, issued with the same headers and the
+#   * the UI's calls work end to end: Authorization Code + PKCE sign-in on fintech-web (the
+#     password grant is refused there), then balance, fund, pay with a fresh Idempotency-Key. These are the same calls app.js makes, issued with the same headers and the
 #     same Origin, so a green run means the buttons work rather than the endpoints do;
 #   * the served files carry no secrets. The UI holds no key by design; grep proves the negative
 #     rather than asserting it in a comment.
@@ -26,9 +26,12 @@ readonly GATEWAY="http://localhost:8080"
 readonly KEYCLOAK="http://localhost:8180"
 readonly ORIGIN="http://localhost:3001"
 readonly ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "${ROOT_DIR}/scripts/private-temp.sh"
+trap fintech_cleanup_private_tmp EXIT
 readonly ENV_FILE="${ROOT_DIR}/.env"
-readonly DEV_PASSWORD="fintech-dev-only"
-readonly BODY_FILE=/tmp/frontend-body.json
+DEV_PASSWORD="$(fintech_seed_user_password "${ENV_FILE}")" || exit 1
+readonly DEV_PASSWORD
+readonly BODY_FILE="${FINTECH_TMP_DIR}/frontend-body.json"
 
 readonly RUN_ID="webcheck-${RANDOM}-${RANDOM}"
 readonly PAYER="webcheck-${RUN_ID}@fintech.test"
@@ -56,7 +59,7 @@ kc_token() {
   local response
   response="$(curl -s -X POST "${KEYCLOAK}/realms/$(env_value KEYCLOAK_REALM)/protocol/openid-connect/token" \
     -H "Origin: ${ORIGIN}" \
-    -d grant_type=password -d client_id=fintech-web \
+    -d grant_type=password -d client_id=fintech-cli \
     --data-urlencode "username=${username}" --data-urlencode "password=${DEV_PASSWORD}")"
   python3 -c 'import json,sys
 try:
@@ -69,7 +72,7 @@ kc_admin_token() {
   curl -s -X POST "${KEYCLOAK}/realms/master/protocol/openid-connect/token" \
     -d grant_type=password -d client_id=admin-cli \
     --data-urlencode "username=$(env_value KEYCLOAK_ADMIN_USERNAME)" \
-    --data-urlencode "password=$(env_value KEYCLOAK_ADMIN_PASSWORD)" |
+    --data-urlencode "password@$(fintech_keycloak_admin_password_file "$ENV_FILE")" |
     python3 -c 'import json,sys; print(json.load(sys.stdin).get("access_token", ""))'
 }
 
@@ -89,24 +92,24 @@ kc_ensure_user() {
   realm="$(env_value KEYCLOAK_REALM)"
   user_id="$(kc_user_id "$username")"
   if [[ -z "$user_id" ]]; then
-    cat > /tmp/kc-new-user.json <<JSON
+    cat > "${FINTECH_TMP_DIR}/kc-new-user.json" <<JSON
 {"username":"${username}","enabled":true,"email":"${username}","emailVerified":true,
  "firstName":"Web","lastName":"Check",
  "credentials":[{"type":"password","value":"${DEV_PASSWORD}","temporary":false}]}
 JSON
-    status="$(curl -s -o /tmp/kc-body.json -w '%{http_code}' -X POST \
+    status="$(curl -s -o "${FINTECH_TMP_DIR}/kc-body.json" -w '%{http_code}' -X POST \
       "${KEYCLOAK}/admin/realms/${realm}/users" \
       -H "Authorization: Bearer ${admin}" -H 'Content-Type: application/json' \
-      -d @/tmp/kc-new-user.json)"
-    [[ "$status" == "201" ]] || { cat /tmp/kc-body.json; fail "creating local dev user ${username}"; }
+      -d @"${FINTECH_TMP_DIR}/kc-new-user.json")"
+    [[ "$status" == "201" ]] || fail "creating local dev user ${username}"
     user_id="$(kc_user_id "$username")"
   fi
   [[ -n "$user_id" ]] || fail "could not resolve the id of ${username}"
   curl -s "${KEYCLOAK}/admin/realms/${realm}/roles/CUSTOMER" -H "Authorization: Bearer ${admin}" \
-    -o /tmp/kc-role.json
-  python3 -c "import json; json.dump([json.load(open('/tmp/kc-role.json'))], open('/tmp/kc-rolemap.json','w'))"
+    -o "${FINTECH_TMP_DIR}/kc-role.json"
+  fintech_json_array_file "${FINTECH_TMP_DIR}/kc-role.json" "${FINTECH_TMP_DIR}/kc-rolemap.json"
   curl -s -o /dev/null -X POST "${KEYCLOAK}/admin/realms/${realm}/users/${user_id}/role-mappings/realm" \
-    -H "Authorization: Bearer ${admin}" -H 'Content-Type: application/json' -d @/tmp/kc-rolemap.json
+    -H "Authorization: Bearer ${admin}" -H 'Content-Type: application/json' -d @"${FINTECH_TMP_DIR}/kc-rolemap.json"
   kc_token "$username" | grep -q . || fail "${username} cannot obtain a token after being created"
 }
 
@@ -130,8 +133,8 @@ python3 -c "import json; json.load(open('$BODY_FILE'))" ||
 pass "config.json served and parseable"
 
 step "No secrets in the served files"
-served="$(curl -s "${UI}/app.js")$(curl -s "${UI}/config.json")"
-for pattern in 'PRIVATE KEY' 'fintech-dev-only' 'BEGIN RSA' 'api-secret' 'client_secret'; do
+served="$(curl -s "${UI}/app.js")$(curl -s "${UI}/api.js")$(curl -s "${UI}/oidc.js")$(curl -s "${UI}/config.json")"
+for pattern in 'PRIVATE KEY' "${DEV_PASSWORD}" 'BEGIN RSA' 'api-secret' 'client_secret'; do
   if printf '%s' "$served" | grep -q "$pattern"; then
     fail "the served UI contains '${pattern}'; the UI holds no secret by design"
   fi
@@ -149,17 +152,54 @@ echo "$headers" | grep -iq "idempotency-key" ||
   fail "the preflight allow-list names no idempotency-key; every browser payment would fail before leaving the page"
 pass "preflight echoes the origin and allows the payment headers"
 
-step "The UI's calls move money: login, fund, pay"
+for method in PUT DELETE; do
+  headers="$(curl -s -D - -o /dev/null -X OPTIONS "${GATEWAY}/api/v1/customers/me" \
+    -H "Origin: ${ORIGIN}" -H "Access-Control-Request-Method: ${method}" \
+    -H 'Access-Control-Request-Headers: authorization,content-type')"
+  echo "$headers" | grep -iq "access-control-allow-origin: ${ORIGIN}" ||
+    fail "the ${method} profile preflight does not allow ${ORIGIN}"
+  echo "$headers" | grep -iq "access-control-allow-methods:.*${method}" ||
+    fail "the ${method} profile preflight is missing its method allow-list"
+done
+
+headers="$(curl -s -D - -o /dev/null -X OPTIONS "${GATEWAY}/register" \
+  -H "Origin: ${ORIGIN}" -H 'Access-Control-Request-Method: POST' \
+  -H 'Access-Control-Request-Headers: content-type,x-correlation-id')"
+echo "$headers" | grep -iq "access-control-allow-origin: ${ORIGIN}" ||
+  fail "the registration preflight does not allow ${ORIGIN}"
+echo "$headers" | grep -iq 'access-control-allow-methods:.*POST' ||
+  fail "the registration preflight is missing POST"
+echo "$headers" | grep -iq 'access-control-allow-headers:.*x-correlation-id' ||
+  fail "the registration preflight is missing X-Correlation-Id"
+pass "profile update/erasure and registration preflights allow their exact methods and headers"
+
+step "The UI's sign-in: Authorization Code + PKCE, and no password grant"
 kc_ensure_user "$PAYER"
-TOKEN="$(kc_token "$PAYER")"
-[[ -n "$TOKEN" ]] || fail "${PAYER} cannot obtain a token with an Origin header; Keycloak does not list ${ORIGIN}"
-pass "password grant works with the UI's Origin header"
+grant="$(curl -s -X POST "${KEYCLOAK}/realms/$(env_value KEYCLOAK_REALM)/protocol/openid-connect/token" \
+  -H "Origin: ${ORIGIN}" -d grant_type=password -d client_id=fintech-web \
+  --data-urlencode "username=${PAYER}" --data-urlencode "password=${DEV_PASSWORD}")"
+if printf '%s' "$grant" | grep -q '"access_token"'; then
+  fail "fintech-web still issues tokens for the password grant; the browser client must be code+PKCE only"
+fi
+pass "the browser client refuses the password grant"
+
+code="$(curl -s -o /dev/null -w '%{http_code}' "${KEYCLOAK}/realms/$(env_value KEYCLOAK_REALM)/protocol/openid-connect/auth?response_type=code&client_id=fintech-web&redirect_uri=${UI}/&scope=openid&state=s")"
+[[ "$code" != "200" ]] || fail "an authorize request without a PKCE challenge was accepted"
+pass "an authorize request without a PKCE challenge is refused"
+
+TOKEN="$(FINTECH_LOGIN_PASSWORD="${DEV_PASSWORD}" python3 "${ROOT_DIR}/scripts/oidc-pkce-login.py" \
+  "${KEYCLOAK}" "$(env_value KEYCLOAK_REALM)" "${UI}/" "${ORIGIN}" "${PAYER}")" ||
+  fail "the Authorization Code + PKCE sign-in failed (see the reason above)"
+[[ -n "$TOKEN" ]] || fail "the PKCE sign-in returned no token"
+pass "code + S256 verifier redeemed from the UI's Origin; state and nonce round-tripped"
+
+step "The UI's calls move money: register, fund, pay"
 
 # Onboard the profile the UI's register form would create, through the same endpoints.
 code="$(curl -s -o "$BODY_FILE" -w '%{http_code}' -X POST "${GATEWAY}/api/v1/customers" \
   -H "Origin: ${ORIGIN}" -H "Authorization: Bearer ${TOKEN}" -H 'Content-Type: application/json' \
   -d '{"fullName":"Web Check","dateOfBirth":"1991-04-17","nationality":"GB","email":"user-'"$PAYER"'","phone":"+447700900123","address":{"line1":"12 Alder Way","city":"Manchester","postalCode":"M1 4BT","country":"GB"}}')"
-[[ "$code" == "201" ]] || { cat "$BODY_FILE"; fail "registering through the UI's calls"; }
+[[ "$code" == "201" ]] || fail "registration through the UI's calls returned HTTP ${code}"
 CUSTOMER_ID="$(json 'd["id"]')"
 code="$(curl -s -o "$BODY_FILE" -w '%{http_code}' -X POST "${GATEWAY}/api/v1/customers/${CUSTOMER_ID}/kyc" \
   -H "Origin: ${ORIGIN}" -H "Authorization: Bearer ${TOKEN}" -H 'Content-Type: application/json' \
@@ -171,17 +211,17 @@ pass "registered and identity-checked through the UI's calls"
 code="$(curl -s -o "$BODY_FILE" -w '%{http_code}' -X POST \
   "${GATEWAY}/api/v1/accounts/fund?amount=100.00&currency=GBP" \
   -H "Origin: ${ORIGIN}" -H "Authorization: Bearer ${TOKEN}" -H "Idempotency-Key: webcheck-fund-${RUN_ID}")"
-[[ "$code" == "200" ]] || { cat "$BODY_FILE"; fail "funding through the UI's calls"; }
+[[ "$code" == "200" ]] || fail "funding through the UI's calls returned HTTP ${code}"
 
 code="$(curl -s -o "$BODY_FILE" -w '%{http_code}' -X POST "${GATEWAY}/api/v1/transactions" \
   -H "Origin: ${ORIGIN}" -H "Authorization: Bearer ${TOKEN}" -H "Idempotency-Key: webcheck-pay-${RUN_ID}" \
   -H 'Content-Type: application/json' \
   -d '{"amount":"25.00","currency":"GBP","cardToken":"tok_webcheck'"${RANDOM}"'","payeeName":"Acme Books","payeeReference":"webcheck-'"$RUN_ID"'"}')"
-[[ "$code" == "201" ]] || { cat "$BODY_FILE"; fail "paying through the UI's calls"; }
+[[ "$code" == "201" ]] || fail "payment through the UI's calls returned HTTP ${code}"
 [[ "$(json 'd["status"]')" == "AUTHORIZED" ]] || fail "the payment is not AUTHORIZED"
 pass "100.00 funded and 25.00 paid with UI-origin headers and fresh idempotency keys"
 
 printf '\n\033[32mFrontend lifecycle verified.\033[0m The UI is served with framing refused and no\n'
 printf 'secrets in its files, the preflight answers the UI origin with the payment headers, and the\n'
-printf 'UI\u2019s exact calls — grant, register, check, fund, pay — move money through the gateway.\n'
+printf 'UI\u2019s exact calls — PKCE sign-in, register, check, fund, pay — move money through the gateway.\n'
 printf 'Spend left behind: one throwaway customer and 100.00 GBP funded, 25.00 of it authorised.\n'

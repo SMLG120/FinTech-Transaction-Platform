@@ -3,11 +3,7 @@ package com.fintech.platform.auth.keycloak;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 @ConfigurationProperties(prefix = "platform.keycloak.admin")
-public record KeycloakAdminProperties(
-        String baseUrl,
-        String realm,
-        String clientId,
-        String clientSecret) {
+public record KeycloakAdminProperties(String baseUrl, String realm, String clientId, String clientSecret) {
 
     public KeycloakAdminProperties {
         require(baseUrl, "baseUrl");

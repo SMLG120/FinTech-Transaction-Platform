@@ -75,9 +75,12 @@ set -euo pipefail
 readonly GATEWAY="http://localhost:8080"
 readonly KEYCLOAK="http://localhost:8180"
 readonly ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "${ROOT_DIR}/scripts/private-temp.sh"
+trap fintech_cleanup_private_tmp EXIT
 readonly ENV_FILE="${ROOT_DIR}/.env"
-readonly DEV_PASSWORD="fintech-dev-only"
-readonly BODY_FILE=/tmp/settlement-body.json
+DEV_PASSWORD="$(fintech_seed_user_password "${ENV_FILE}")" || exit 1
+readonly DEV_PASSWORD
+readonly BODY_FILE="${FINTECH_TMP_DIR}/settlement-body.json"
 
 # A distinct identity per run, so a second run exercises fresh money rather than replaying the first
 # run's and appearing to pass for the wrong reason.
@@ -124,7 +127,6 @@ expect_status() {
   got="$(request "$method" "$url" "$body" "$token" "$key")"
   if [[ "$got" != "$want" ]]; then
     printf '  expected %s, got %s\n' "$want" "$got"
-    cat "$BODY_FILE"
     fail "$method $url"
   fi
 }
@@ -193,7 +195,7 @@ kc_admin_token() {
   curl -s -X POST "${KEYCLOAK}/realms/master/protocol/openid-connect/token" \
     -d grant_type=password -d client_id=admin-cli \
     --data-urlencode "username=$(env_value KEYCLOAK_ADMIN_USERNAME)" \
-    --data-urlencode "password=$(env_value KEYCLOAK_ADMIN_PASSWORD)" |
+    --data-urlencode "password@$(fintech_keycloak_admin_password_file "$ENV_FILE")" |
     python3 -c 'import json,sys; print(json.load(sys.stdin).get("access_token", ""))'
 }
 
@@ -202,7 +204,7 @@ kc_token() {
   [[ "$username" == *@* ]] || username="${username}@fintech.test"
   local response
   response="$(curl -s -X POST "${KEYCLOAK}/realms/$(env_value KEYCLOAK_REALM)/protocol/openid-connect/token" \
-    -d grant_type=password -d client_id=fintech-web \
+    -d grant_type=password -d client_id=fintech-cli \
     --data-urlencode "username=${username}" --data-urlencode "password=${DEV_PASSWORD}")"
   python3 -c 'import json,sys
 try:
@@ -228,16 +230,16 @@ kc_ensure_user() {
 
   user_id="$(kc_user_id "$username")"
   if [[ -z "$user_id" ]]; then
-    cat > /tmp/kc-new-user.json <<JSON
+    cat > "${FINTECH_TMP_DIR}/kc-new-user.json" <<JSON
 {"username":"${username}","enabled":true,"email":"${username}","emailVerified":true,
  "firstName":"Settlement","lastName":"Check",
  "credentials":[{"type":"password","value":"${DEV_PASSWORD}","temporary":false}]}
 JSON
-    status="$(curl -s -o /tmp/kc-body.json -w '%{http_code}' -X POST \
+    status="$(curl -s -o "${FINTECH_TMP_DIR}/kc-body.json" -w '%{http_code}' -X POST \
       "${KEYCLOAK}/admin/realms/${realm}/users" \
       -H "Authorization: Bearer ${admin}" -H 'Content-Type: application/json' \
-      -d @/tmp/kc-new-user.json)"
-    [[ "$status" == "201" ]] || { cat /tmp/kc-body.json; fail "creating local dev user ${username}"; }
+      -d @"${FINTECH_TMP_DIR}/kc-new-user.json")"
+    [[ "$status" == "201" ]] || fail "creating local dev user ${username}"
     user_id="$(kc_user_id "$username")"
   fi
   [[ -n "$user_id" ]] || fail "could not resolve the id of ${username}"
@@ -245,10 +247,10 @@ JSON
   # realmRoles in the create payload is ignored by Keycloak, and the assignment call wants the full role
   # representation rather than {id, name} or it answers 409.
   curl -s "${KEYCLOAK}/admin/realms/${realm}/roles/CUSTOMER" -H "Authorization: Bearer ${admin}" \
-    -o /tmp/kc-role.json
-  python3 -c "import json; json.dump([json.load(open('/tmp/kc-role.json'))], open('/tmp/kc-rolemap.json','w'))"
+    -o "${FINTECH_TMP_DIR}/kc-role.json"
+  fintech_json_array_file "${FINTECH_TMP_DIR}/kc-role.json" "${FINTECH_TMP_DIR}/kc-rolemap.json"
   curl -s -o /dev/null -X POST "${KEYCLOAK}/admin/realms/${realm}/users/${user_id}/role-mappings/realm" \
-    -H "Authorization: Bearer ${admin}" -H 'Content-Type: application/json' -d @/tmp/kc-rolemap.json
+    -H "Authorization: Bearer ${admin}" -H 'Content-Type: application/json' -d @"${FINTECH_TMP_DIR}/kc-rolemap.json"
 
   kc_token "$username" | grep -q . || fail "${username} cannot obtain a token after being created"
 }
@@ -678,8 +680,7 @@ expect_status 200 POST "${GATEWAY}/api/v1/settlement/breaks/${BREAK_ID}/acknowle
 OPERATOR_SUBJECT="$(token_subject "$OPERATOR_TOKEN")"
 [[ -n "$OPERATOR_SUBJECT" ]] || fail "the operator's token carries no sub claim, so it cannot be attributed"
 [[ "$(json 'd["acknowledgedBy"]')" == "$OPERATOR_SUBJECT" ]] ||
-  fail "the acknowledgement is attributed to '$(json 'd["acknowledgedBy"]')' rather than to the subject \
-that sent it, ${OPERATOR_SUBJECT}"
+  fail "the acknowledgement actor does not match the signed operator identity"
 
 expect_status 200 POST "${GATEWAY}/api/v1/settlement/breaks/${BREAK_ID}/resolve" \
   '{"resolution":"a 1.00 bank charge, found in the clearing file"}' "$OPERATOR_TOKEN"

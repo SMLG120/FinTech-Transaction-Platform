@@ -3,15 +3,13 @@ package com.fintech.platform.auth.customer;
 import com.fintech.platform.common.identity.InternalIdentity;
 import com.fintech.platform.common.identity.InternalIdentityCodec;
 import java.time.Clock;
-import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
-import org.springframework.stereotype.Service;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 
@@ -33,7 +31,8 @@ public class CustomerProvisioningClient {
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout((int) properties.timeoutMs());
         factory.setReadTimeout((int) properties.timeoutMs());
-        this.http = builder.baseUrl(properties.baseUrl()).requestFactory(factory).build();
+        this.http =
+                builder.baseUrl(properties.baseUrl()).requestFactory(factory).build();
         this.identityCodec = identityCodec;
         this.clock = clock;
     }
@@ -51,7 +50,9 @@ public class CustomerProvisioningClient {
                     .onStatus(HttpStatusCode::isError, (ignored, responseEntity) -> {
                         HttpStatusCode status = responseEntity.getStatusCode();
                         throw new CustomerProvisioningException(
-                                status.value() == 409 ? "Customer profile already exists" : "Customer profile provisioning failed",
+                                status.value() == 409
+                                        ? "Customer profile already exists"
+                                        : "Customer profile provisioning failed",
                                 status);
                     })
                     .body(CustomerProfile.class);

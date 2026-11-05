@@ -3,41 +3,21 @@ import { AlertCircle, ArrowLeft, Lock } from 'lucide-react';
 import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { Link, useNavigate } from 'react-router-dom';
-import { z } from 'zod';
 import { Button } from '../../components/ui/Button';
 import { ApiError, apiClient } from '../../api/client';
-
-const schema = z.object({
-  fullName: z.string().trim().min(1, 'Enter your full name.').max(200),
-  dateOfBirth: z.string().min(1, 'Enter your date of birth.').refine(
-    (value) => value < new Date().toISOString().slice(0, 10),
-    'Date of birth must be in the past.',
-  ),
-  nationality: z.string().regex(/^[A-Za-z]{2}$/, 'Use a 2-letter country code.'),
-  email: z.string().email('Enter a valid email address.').max(320),
-  password: z.string().min(12, 'Use at least 12 characters.').max(128),
-  phone: z.string().max(32).optional(),
-  address: z.object({
-    line1: z.string().trim().min(1, 'Enter your address.').max(200),
-    line2: z.string().max(200).optional(),
-    city: z.string().trim().min(1, 'Enter your city.').max(100),
-    postalCode: z.string().trim().min(1, 'Enter your postal code.').max(20),
-    country: z.string().regex(/^[A-Za-z]{2}$/, 'Use a 2-letter country code.'),
-  }),
-});
-
-type FormValues = z.infer<typeof schema>;
+import { registrationSchema } from './registrationSchema';
+import type { RegistrationFormValues } from './registrationSchema';
 
 export function RegistrationPage() {
   const navigate = useNavigate();
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const { register, handleSubmit, formState: { errors } } = useForm<FormValues>({
-    resolver: zodResolver(schema),
+  const { register, handleSubmit, formState: { errors } } = useForm<RegistrationFormValues>({
+    resolver: zodResolver(registrationSchema),
     defaultValues: { nationality: 'GB', address: { country: 'GB' } },
   });
 
-  const onSubmit = async (values: FormValues) => {
+  const onSubmit = async (values: RegistrationFormValues) => {
     if (isLoading) return;
     setError(null);
     setIsLoading(true);
@@ -45,8 +25,10 @@ export function RegistrationPage() {
       await apiClient.register(values);
       navigate('/login', { replace: true, state: { registrationComplete: true } });
     } catch (cause) {
-      if (cause instanceof ApiError && cause.status === 409) {
-        setError('Registration could not be completed. Please check your details and try again.');
+      if (cause instanceof ApiError && cause.code === 'EMAIL_ALREADY_REGISTERED') {
+        setError('An account already exists for this email. Sign in or use a different email address.');
+      } else if (cause instanceof ApiError && cause.status === 409) {
+        setError('An account could not be created with these details. Please sign in or try again.');
       } else if (cause instanceof ApiError && cause.status === 400) {
         setError('Please check the information entered and try again.');
       } else {

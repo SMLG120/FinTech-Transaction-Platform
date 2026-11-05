@@ -13,8 +13,8 @@ file delete the realm first:
 docker compose restart keycloak
 ```
 
-> **This realm is for local development only.** It contains fixed passwords and
-> `directAccessGrantsEnabled`, and it runs with `sslRequired: none`. It must never be imported into
+> **This realm is for local development only.** It contains seeded users and the dev-only
+> `fintech-cli` client with the password grant enabled. It must never be imported into
 > an environment reachable from anywhere but a developer's own machine.
 
 ## What it defines
@@ -45,11 +45,13 @@ fraud queue, a settlement operator closes periods and declares actuals, and neit
 (`AUDITOR`, `COMPLIANCE_OFFICER`) may do either.
 
 **Clients** — `fintech-api` is a bearer-only client whose client id is the token audience, and
-`fintech-web` is the public client local tooling uses to obtain tokens. The audience mapper on
-`fintech-web` is what puts `fintech-api` in `aud`; without it every token this realm issues is
+`fintech-web` is the public browser client both UIs use with Authorization Code + PKCE (no
+password grant), and `fintech-cli` is the dev-only public client the scripts use with the password
+grant (no browser flows). The audience mapper on both is what puts `fintech-api` in `aud`; without it every token this realm issues is
 audience-agnostic and would be accepted by any service that only checks the issuer.
 
-**Users** — seven synthetic identities, one per role, all with the password `fintech-dev-only`. They
+**Users** — seven synthetic identities, one per role, all sharing a password that is **not** in this file: it is the import placeholder
+`${SEED_USER_PASSWORD}`, generated randomly per checkout by `scripts/bootstrap.sh`. They
 exist so authorisation can be exercised end to end; they are not credentials for anything.
 `analyst@fintech.test` holds `FRAUD_ANALYST` and is the identity that can work the fraud queue;
 `auditor@fintech.test` and `compliance@fintech.test` can read it and cannot change it, which is the
@@ -113,12 +115,30 @@ file is read in full.
   appears on a fresh import, so a description that grows past the limit sits in the file silently
   until the next delete-and-restart. Count before committing.
 - **`webOrigins` on `fintech-web` lists every browser origin that may call the token endpoint,
-  currently `http://localhost:3000`, `http://localhost:3001` (the web UI),
-  `http://localhost:8081` and `http://localhost:5173` (the React dashboard dev
-  server).** Without its origin here, a UI gets no `Access-Control-Allow-Origin`
+  currently `http://localhost:3001` (the web UI) and `http://localhost:5173` (the React dashboard
+  dev server). `redirectUris` are exact — `http://localhost:3001/` and
+  `http://localhost:5173/auth/callback` — with no wildcards.** Without its origin here, a UI gets no `Access-Control-Allow-Origin`
   on the token response and the browser blocks reading it, which surfaces as
   a bare "fail to fetch" rather than a login error. An origin added to the gateway's CORS allow-list but not here gets
   `{"error":"Invalid origin"}` from the token endpoint — a login that fails before any password
   is checked, which reads as broken credentials rather than a mismatched string. Like every realm
   change, an addition here does nothing to a running stack until the realm is deleted and
   re-imported.
+
+## Hardening applied to the local realm
+
+- **No committed credentials.** User passwords are `${SEED_USER_PASSWORD}` and the registration
+  client secret is `${KEYCLOAK_ADMIN_CLIENT_SECRET}`; Keycloak resolves both from the container
+  environment at import time, and `scripts/bootstrap.sh` generates them randomly into `.env`.
+- **`fintech-registration` client.** Confidential, service-account only (no browser flow, no
+  password grant), holding just `realm-management/manage-users` and `view-realm` so auth-service can
+  create CUSTOMER users. Previously referenced by auth-service but missing from the realm, which left
+  self-registration unable to authenticate.
+- **Password policy** (length ≥ 12, upper, lower, digit, not the username/email, history 3), brute
+  force lockout after 5 failures, `sslRequired: external`.
+- **Browser client is code + PKCE only.** `fintech-web`: PKCE S256 required, direct grants and the
+  implicit flow disabled, exact redirect URIs, explicit post-logout redirect allow-list, no
+  `offline_access`. The scripts' password grant moved to the dev-only `fintech-cli` client.
+- The realm is imported only when it does not already exist. After pulling these changes, recreate
+  the Keycloak volume once (`docker compose down -v`, or remove `keycloak-data`) so the new realm is
+  imported.

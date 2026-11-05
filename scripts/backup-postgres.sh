@@ -24,6 +24,7 @@
 # was verified with: backup, drop fintech_audit, restore, compare row counts.
 
 set -euo pipefail
+umask 077
 
 readonly ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly ENV_FILE="${ROOT_DIR}/.env"

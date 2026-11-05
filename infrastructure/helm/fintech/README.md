@@ -16,7 +16,8 @@ helm install fintech infrastructure/helm/fintech \
   -f /run/secrets/fintech-secrets.yaml
 ```
 
-The secrets file gives every value under `services.*.secrets` plus
+The secrets file gives every value under `services.*.secrets` (including the
+auth-service Keycloak provisioning client secret) plus
 `global.identitySigningKey` and `global.redisPassword`. Rendering without
 them fails loudly naming the missing value — the Helm equivalent of the
 Compose `${VAR:?...}` rule. A service that starts with an empty password is
@@ -35,6 +36,10 @@ worse than a release that refuses to render.
   service keys, plus one shared Secret for the interim shared values (redis
   password, identity HMAC key). Database passwords are per service — the
   shared local Compose password has no counterpart here.
+- `auth-service` receives its customer-service URL and Keycloak provisioning
+  client settings; the external identity provider must have the dedicated
+  `fintech-registration` service account configured with only the user/role
+  permissions documented in `infrastructure/keycloak/realm/README.md`.
 - `templates/NOTES.txt` — post-install checklist (migrations job, access,
   key rotation).
 
@@ -43,6 +48,8 @@ worse than a release that refuses to render.
 - `SPRING_FLYWAY_ENABLED=false` on every service with a database:
   migrations are a pre-deploy job, never the serving pods (see
   docs/deployment.md).
+- Springdoc API docs and Swagger UI are disabled in deployed pods; contract
+  tests and local development remain available in the local/test profile.
 - Probes on the same readiness/liveness endpoints the Docker healthcheck
   curls, with JVM-aware initial delays.
 - Non-root user, `RuntimeDefault` seccomp, 30s termination grace for

@@ -95,7 +95,10 @@ public class KycService {
             // Deliberately a 503 and a log line, not a rethrow. The submission is already durable, so
             // the customer is not left believing they never tried, and the reason a provider is
             // unavailable is the provider's business rather than the caller's.
-            log.warn("identity check {} could not reach the provider; leaving it open", checkId, e);
+            log.warn(
+                    "identity check {} could not reach the provider; leaving it open (exception type {})",
+                    checkId,
+                    e.getClass().getSimpleName());
             throw CustomerErrorCodes.KYC_PROVIDER_UNAVAILABLE.exception();
         }
         return workflow.recordDecision(checkId, assessment);
