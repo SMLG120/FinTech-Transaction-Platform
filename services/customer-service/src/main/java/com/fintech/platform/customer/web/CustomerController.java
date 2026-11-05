@@ -64,11 +64,11 @@ public class CustomerController {
     public ResponseEntity<CustomerDtos.CustomerResponse> provision(
             @Valid @RequestBody CustomerDtos.ProvisionRequest request) {
         InternalIdentity internal = caller.require();
-        if (!AUTH_SERVICE_SUBJECT.equals(internal.subject())
-                || !AUTH_SERVICE_USERNAME.equals(internal.username())) {
+        if (!AUTH_SERVICE_SUBJECT.equals(internal.subject()) || !AUTH_SERVICE_USERNAME.equals(internal.username())) {
             throw com.fintech.platform.customer.error.CustomerErrorCodes.NOT_THE_OWNER.exception();
         }
-        CustomerProfileView view = customerService.provision(request.keycloakSubject(), request.toIdentity(), request.phone());
+        CustomerProfileView view =
+                customerService.provision(request.keycloakSubject(), request.toIdentity(), request.phone());
         return ResponseEntity.status(201).body(toResponse(view));
     }
 

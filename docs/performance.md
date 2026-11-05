@@ -15,10 +15,14 @@ Warm laptop stack, loopback networking, default profile (200 × £5.00,
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | 41 ms | 123 ms | 182 ms | 123 ms | 0 / 0 / 0 | exact |
 | 2 | 28 ms | 92 ms | 128 ms | 115 ms | 0 / 0 / 0 | exact |
+| 2026-10-19 review attempt 1 | 127 ms | 674.5 ms | 2168.7 ms | 688.2 ms | 0 / 0 / 0 | not checked: p95 gate stopped before ledger assertions |
+| 2026-10-19 review attempt 2 | 58.7 ms | 212.3 ms | 653.8 ms | 245.1 ms | 0 / 0 / 0 | exact |
 
-The p95 bound defaults to 500 ms: roughly 4–5x the measured p95, so a cold
-stack passes and a real regression does not. The bound is measured, not
-predicted — if the stack gets faster, lower it and say when.
+The p95 bound defaults to 500 ms, roughly 4–5x the original warm baseline.
+The first readiness-review run exceeded it; the second run, after the stack
+was warm, passed with an exact balance and balanced journal. The threshold was
+not relaxed. This variability needs further measurement under a controlled
+staging setup before it can support an operational latency claim.
 
 ## Knobs
 

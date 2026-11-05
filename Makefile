@@ -181,7 +181,10 @@ load-smoke: ## Drive a bounded burst of payments and assert latency, errors and 
 .PHONY: helm-template
 helm-template: ## Lint and render the Helm chart and validate all manifests
 	@echo "> helm lint infrastructure/helm/fintech"
-	@helm lint infrastructure/helm/fintech
+	@helm lint infrastructure/helm/fintech \
+		--set services.auth-service.keycloakAdminBaseUrl=https://idp.example.test \
+		--set services.auth-service.keycloakAdminClientId=fintech-registration \
+		--set services.auth-service.keycloakRealm=fintech
 	@echo "> helm template (throwaway secrets, never committed)"
 	@helm template fintech infrastructure/helm/fintech \
 		--set global.identitySigningKey=smoke --set global.redisPassword=smoke \
@@ -190,6 +193,10 @@ helm-template: ## Lint and render the Helm chart and validate all manifests
 		--set services.transaction-service.secrets.SUBJECT_DIGEST_KEY=smoke \
 		--set services.fraud-service.secrets.SUBJECT_DIGEST_KEY=smoke \
 		--set services.auth-service.secrets.SERVICE_DB_PASSWORD=smoke \
+		--set services.auth-service.secrets.KEYCLOAK_ADMIN_CLIENT_SECRET=smoke \
+		--set services.auth-service.keycloakAdminBaseUrl=https://idp.example.test \
+		--set services.auth-service.keycloakAdminClientId=fintech-registration \
+		--set services.auth-service.keycloakRealm=fintech \
 		--set services.customer-service.secrets.SERVICE_DB_PASSWORD=smoke \
 		--set services.card-service.secrets.SERVICE_DB_PASSWORD=smoke \
 		--set services.transaction-service.secrets.SERVICE_DB_PASSWORD=smoke \

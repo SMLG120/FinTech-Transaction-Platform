@@ -113,7 +113,10 @@ public class ObservationStore {
         try {
             observations.recordSighting(scope, kind, subjectDigest, observationKey, clock.instant());
         } catch (RuntimeException e) {
-            log.warn("Could not record {} observation for a subject digest: {}", kind, e.toString());
+            log.warn(
+                    "Could not record {} observation for a subject digest (exception type {})",
+                    kind,
+                    e.getClass().getSimpleName());
         }
     }
 

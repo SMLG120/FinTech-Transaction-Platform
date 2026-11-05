@@ -29,9 +29,12 @@ set -euo pipefail
 readonly GATEWAY="http://localhost:8080"
 readonly KEYCLOAK="http://localhost:8180"
 readonly ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "${ROOT_DIR}/scripts/private-temp.sh"
+trap fintech_cleanup_private_tmp EXIT
 readonly ENV_FILE="${ROOT_DIR}/.env"
-readonly DEV_PASSWORD="fintech-dev-only"
-readonly BODY_FILE=/tmp/load-body.json
+DEV_PASSWORD="$(fintech_seed_user_password "${ENV_FILE}")" || exit 1
+readonly DEV_PASSWORD
+readonly BODY_FILE="${FINTECH_TMP_DIR}/load-body.json"
 
 readonly LOAD_USER="load-a@fintech.test"
 readonly FULL_NAME="Load Amber"
@@ -56,13 +59,13 @@ kc_admin_token() {
   curl -s -X POST "${KEYCLOAK}/realms/master/protocol/openid-connect/token" \
     -d grant_type=password -d client_id=admin-cli \
     --data-urlencode "username=$(env_value KEYCLOAK_ADMIN_USERNAME)" \
-    --data-urlencode "password=$(env_value KEYCLOAK_ADMIN_PASSWORD)" |
+    --data-urlencode "password@$(fintech_keycloak_admin_password_file "$ENV_FILE")" |
     python3 -c 'import json,sys; print(json.load(sys.stdin).get("access_token", ""))'
 }
 
 kc_token() {
   curl -s -X POST "${KEYCLOAK}/realms/$(env_value KEYCLOAK_REALM)/protocol/openid-connect/token" \
-    -d grant_type=password -d client_id=fintech-web \
+    -d grant_type=password -d client_id=fintech-cli \
     --data-urlencode "username=$1" --data-urlencode "password=${DEV_PASSWORD}" |
     python3 -c 'import json,sys; print(json.load(sys.stdin).get("access_token", ""))'
 }
@@ -78,10 +81,10 @@ kc_ensure_user() {
     python3 -c 'import json,sys; u=json.load(sys.stdin); print(u[0]["id"] if u else "")')"
 
   if [[ -z "$user_id" ]]; then
-    status="$(curl -s -o /tmp/kc-body.json -w '%{http_code}' -X POST "${KEYCLOAK}/admin/realms/${realm}/users" \
+    status="$(curl -s -o "${FINTECH_TMP_DIR}/kc-body.json" -w '%{http_code}' -X POST "${KEYCLOAK}/admin/realms/${realm}/users" \
       -H "Authorization: Bearer ${admin}" -H 'Content-Type: application/json' \
       -d "{\"username\":\"${username}\",\"enabled\":true,\"email\":\"${username}\",\"emailVerified\":true,\"firstName\":\"Load\",\"lastName\":\"Amber\",\"credentials\":[{\"type\":\"password\",\"value\":\"${DEV_PASSWORD}\",\"temporary\":false}]}")"
-    [[ "$status" == "201" ]] || { cat /tmp/kc-body.json; fail "creating local dev user ${username}"; }
+    [[ "$status" == "201" ]] || fail "creating local dev user ${username}"
     user_id="$(curl -s "${KEYCLOAK}/admin/realms/${realm}/users?username=${username}&exact=true" \
       -H "Authorization: Bearer ${admin}" |
       python3 -c 'import json,sys; u=json.load(sys.stdin); print(u[0]["id"] if u else "")')"
@@ -89,10 +92,10 @@ kc_ensure_user() {
   [[ -n "$user_id" ]] || fail "could not resolve the id of ${username}"
 
   curl -s "${KEYCLOAK}/admin/realms/${realm}/roles/${role}" -H "Authorization: Bearer ${admin}" \
-    -o /tmp/kc-role.json
-  python3 -c "import json; json.dump([json.load(open('/tmp/kc-role.json'))], open('/tmp/kc-rolemap.json','w'))"
+    -o "${FINTECH_TMP_DIR}/kc-role.json"
+  fintech_json_array_file "${FINTECH_TMP_DIR}/kc-role.json" "${FINTECH_TMP_DIR}/kc-rolemap.json"
   curl -s -o /dev/null -X POST "${KEYCLOAK}/admin/realms/${realm}/users/${user_id}/role-mappings/realm" \
-    -H "Authorization: Bearer ${admin}" -H 'Content-Type: application/json' -d @/tmp/kc-rolemap.json
+    -H "Authorization: Bearer ${admin}" -H 'Content-Type: application/json' -d @"${FINTECH_TMP_DIR}/kc-rolemap.json"
 
   kc_token "$username" | grep -q . || fail "${username} cannot obtain a token after being created"
 }
@@ -146,10 +149,10 @@ step "Funding and reading the opening balance"
 # Funded far above the run's total so every payment is about the platform,
 # never about an empty account: 200 x 5.00 needs 1000.00.
 FUND="5000.00"
-curl -s -o "${BODY_FILE}" -w '%{http_code}' -X POST \
+FUND_STATUS="$(curl -s -o "${BODY_FILE}" -w '%{http_code}' -X POST \
   "${GATEWAY}/api/v1/accounts/fund?amount=${FUND}&currency=GBP" \
-  -H "Authorization: Bearer ${TOKEN}" -H "Idempotency-Key: ${RUN_ID}-fund" | grep -q '^200$' \
-  || { cat "${BODY_FILE}"; fail "funding failed"; }
+  -H "Authorization: Bearer ${TOKEN}" -H "Idempotency-Key: ${RUN_ID}-fund")"
+[[ "$FUND_STATUS" == "200" ]] || fail "funding failed with HTTP ${FUND_STATUS}"
 OPENING="$(curl -s "${GATEWAY}/api/v1/accounts/balance?currency=GBP" \
   -H "Authorization: Bearer ${TOKEN}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["available"])')"
 pass "funded ${FUND}; opening available ${OPENING}"
@@ -231,9 +234,6 @@ value() { printf '%s' "$SUMMARY" | python3 -c "import json,sys; print(json.load(
 [[ "$(value declined)" == "0" ]] || fail "$(value declined) payments declined; the account was underfunded for this run"
 [[ "$(value attempted)" == "$PAYMENTS" ]] || fail "only $(value attempted) of ${PAYMENTS} payments ran"
 PAY_P95="$(value pay_p95_ms)"
-python3 -c "import sys; sys.exit(0 if float('${PAY_P95}') <= float('${P95_BOUND_MS}') else 1)" \
-  || fail "pay p95 ${PAY_P95}ms exceeds the ${P95_BOUND_MS}ms bound"
-pass "no 5xx, no 429, no declines; pay p95 ${PAY_P95}ms within ${P95_BOUND_MS}ms"
 
 step "Confirming the money is exact and the ledger balances"
 # Integer pence throughout: floats never touch money, not even in a test.
@@ -251,5 +251,9 @@ pass "balance is exact to the penny"
 UNBALANCED="$(txn_psql "SELECT count(*) FROM journal_entries e WHERE (SELECT COALESCE(SUM(CASE WHEN l.direction = 'DEBIT' THEN l.amount_minor ELSE 0 END),0) - COALESCE(SUM(CASE WHEN l.direction = 'CREDIT' THEN l.amount_minor ELSE 0 END),0) FROM journal_lines l WHERE l.entry_id = e.id) <> 0;")"
 [[ "$UNBALANCED" == "0" ]] || fail "${UNBALANCED} journal entries do not balance after the run"
 pass "every journal entry still balances"
+
+python3 -c "import sys; sys.exit(0 if float('${PAY_P95}') <= float('${P95_BOUND_MS}') else 1)" \
+  || fail "pay p95 ${PAY_P95}ms exceeds the ${P95_BOUND_MS}ms bound"
+pass "no 5xx, no 429, no declines; pay p95 ${PAY_P95}ms within ${P95_BOUND_MS}ms"
 
 printf '\nload smoke complete: %s payments, pay p95 %sms, ledger exact\n' "$PAYMENTS" "$PAY_P95"

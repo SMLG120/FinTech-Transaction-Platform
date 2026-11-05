@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 #
-# One Dockerfile for all nine Spring Boot services.
+# One Dockerfile for all ten Spring Boot services.
 #
 # The build context is the repository root and the module is selected with --build-arg MODULE=...
-# One template rather than nine near-identical files: a change to how the platform is packaged
+# One template rather than ten near-identical files: a change to how the platform is packaged
 # lands once, and it is impossible for two services to drift apart on security-relevant build
 # settings such as the runtime user or the JVM flags.
 
@@ -96,7 +96,10 @@ ENV SERVICE_NAME=${SERVICE_NAME} \
     # and on a 32 GB node. Metaspace and direct memory are capped explicitly because they are NOT
     # covered by MaxRAMPercentage, and an uncapped metaspace is a common cause of a container being
     # OOM-killed while the JVM still believes it has headroom.
-    JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=70.0 -XX:MaxMetaspaceSize=256m -XX:+UseG1GC -XX:+ExitOnOutOfMemoryError -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp -Djava.security.egd=file:/dev/urandom -Dfile.encoding=UTF-8 -Duser.timezone=UTC"
+    # No HeapDumpOnOutOfMemoryError: a heap dump of these services holds decrypted PII, card PANs in
+    # flight and every key in memory, written unencrypted to a world-readable /tmp. Capture one
+    # deliberately (jcmd GC.heap_dump to an encrypted volume) when a leak actually needs diagnosing.
+    JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=70.0 -XX:MaxMetaspaceSize=256m -XX:+UseG1GC -XX:+ExitOnOutOfMemoryError -Djava.security.egd=file:/dev/urandom -Dfile.encoding=UTF-8 -Duser.timezone=UTC"
 
 ENV SERVER_PORT=8080
 EXPOSE 8080

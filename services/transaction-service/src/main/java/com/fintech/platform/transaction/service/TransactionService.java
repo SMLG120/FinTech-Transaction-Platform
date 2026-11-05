@@ -99,6 +99,11 @@ public class TransactionService {
             String ownerSubjectDigest, String cardToken, Money amount, Counterparty payee, FraudContext context) {
         Instant now = clock.instant();
         requireCurrencySupported(amount.currency());
+        // Serialise this customer's payments before reading today's total. Without the lock the limit
+        // is a check-then-act: N concurrent payments each read the same "spent today", each pass, and
+        // together exceed the daily ceiling. The hold below re-locks the same rows, which Postgres
+        // treats as a no-op inside one transaction, so this adds no extra round trip under contention.
+        ledger.lockCustomerAccounts(ownerSubjectDigest, amount.currency());
         requireWithinLimits(ownerSubjectDigest, amount);
 
         Transaction transaction =
@@ -255,6 +260,24 @@ public class TransactionService {
      * @throws com.fintech.platform.common.error.ApiException 404 when the payment does not exist,
      *     409 when it is in a state no dispute could have produced
      */
+    /**
+     * A reversal requested by the payer through the API.
+     *
+     * <p>Releasing an uncaptured hold is always the payer's right. Reversing a <em>settled</em> payment
+     * is a refund of money the merchant has already collected, so it goes through a dispute decided by
+     * support ({@link #refundForDisputeResolution}) unless the deployment is a sandbox. The status is
+     * checked inside this transaction, against the row the reversal will update, so a concurrent
+     * settle cannot slip between the check and the reversal (the row's {@code @Version} rejects it).
+     */
+    @Transactional
+    public Transaction reverseRequestedByPayer(UUID transactionId, String ownerSubjectDigest) {
+        Transaction transaction = requireOwned(transactionId, ownerSubjectDigest);
+        if (transaction.status() == TransactionStatus.SETTLED && !properties.isSandbox()) {
+            throw TransactionErrorCodes.SETTLED_REFUND_REQUIRES_DISPUTE.exception();
+        }
+        return reverse(transactionId, ownerSubjectDigest);
+    }
+
     @Transactional
     public RefundOutcome refundForDisputeResolution(UUID eventId, String topic, UUID transactionId) {
         if (processed.claim(eventId, topic, clock.instant()) == 0) {

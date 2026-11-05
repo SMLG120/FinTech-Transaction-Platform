@@ -67,7 +67,12 @@ public class RiskEngine {
             } catch (RuntimeException e) {
                 // Deliberately caught per rule. A rule that throws on one payment's shape must not take
                 // the other six with it, and must not leave the payment unscored.
-                log.error("Rule {} ({}) failed for transaction {}", rule.id(), rule.name(), feature.transactionId(), e);
+                log.error(
+                        "Rule {} ({}) failed for transaction {} (exception type {})",
+                        rule.id(),
+                        rule.name(),
+                        feature.transactionId(),
+                        e.getClass().getSimpleName());
                 failed.add(rule.id());
                 continue;
             }

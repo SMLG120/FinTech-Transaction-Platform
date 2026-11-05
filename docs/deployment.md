@@ -6,8 +6,9 @@ below are deliberate rather than oversights to be tidied away later.
 
 ## What the local stack is
 
-- Seventeen long-running containers: ten application services, PostgreSQL, Redis, Kafka, Kafka UI,
-  Keycloak, Prometheus and Grafana, plus a one-shot `kafka-init` that creates topics.
+- Eighteen long-running containers: ten application services, PostgreSQL, Redis, Kafka, Kafka UI,
+  Keycloak, Prometheus, Grafana and the static web frontend, plus a one-shot `kafka-init` that
+  creates topics.
 - Every published port binds to `127.0.0.1`. Nothing is reachable from the network.
 - Secrets are generated into a local `.env` by `scripts/bootstrap.sh`.
 - Images are built locally and tagged `:local`.
@@ -268,7 +269,7 @@ and a redis outage would be able to stop a service that never needed it.
 
 ## Health checks and rollout
 
-Each service image runs as a non-root user and ships a `curl`-based healthcheck against its own
+Each Spring service image runs as a non-root user and ships a `curl`-based healthcheck against its own
 `/actuator/health`. The gateway's health endpoint additionally reflects Redis, because a gateway that
 cannot reach Redis cannot serve traffic.
 
@@ -287,18 +288,22 @@ from files in `infrastructure/grafana/`. Alert rules live in
 make check-prometheus
 ```
 
-The rules are written against series that Phase 1 does not yet emit — transaction correctness and
-event-streaming rules describe behaviour that arrives in later phases. They are loaded and valid, and
-they are expected to stay in a non-firing state until the services that produce those series exist.
+The rules are validated configuration, but they still require a production monitoring deployment,
+alert routing, and an operational review of the metrics actually emitted by the current service
+versions. A successful `promtool` check alone does not prove that an alert will fire on a real incident.
 
 ## Deliberately not here yet
 
-- CI/CD pipelines.
-- TLS termination, ingress certificates, and the Java half of mTLS (PKI
-  manifests and the migration design are in the chart and ADR-0016).
-- Managed backups and disaster recovery beyond the local `scripts/backup-postgres.sh`
-  procedure (dump, restore, and rotation runbooks live in `docs/runbooks/`).
+- CI/CD pipelines and image publishing/promotion.
+- Ingress, TLS termination, and production certificates. The chart has no ingress.
+- The Java half of mTLS. The optional PKI template is not consumed by the services; the shared HMAC
+  identity key remains active until that migration is implemented and verified (ADR-0016).
+- A database migration job. Chart pods disable Flyway, but the chart does not supply the pre-deploy job.
+- External secret references. The chart renders native Kubernetes Secrets from Helm values, which are
+  retained in Helm release state; use a reviewed external-secret design before production.
+- A production frontend build/deployment and OIDC Authorization Code + PKCE login.
+- Managed encrypted backups, point-in-time recovery, and disaster recovery beyond the local
+  `scripts/backup-postgres.sh` procedure (see the runbooks).
 
-The remaining items above are operations to buy, not code to write in this
-repository; the architecture rationale is in [architecture.md](architecture.md)
-and the sequencing in the README.
+These are production blockers, not claims that a successful chart render or local build resolves.
+See [architecture.md](architecture.md) and the root README's production checklist.

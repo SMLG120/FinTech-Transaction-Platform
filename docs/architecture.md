@@ -79,9 +79,10 @@ component chose to record.
 Verifying a token in every service would mean ten places to get issuer, audience and clock skew
 right, and one of them would be wrong. The gateway verifies once and passes the result downstream.
 Downstream services still need to know *who* the caller is, so the gateway forwards validated
-identity in signed internal headers, and from Phase 15 those headers are only accepted on a
-connection authenticated by mTLS. A public client cannot forge them because it never reaches a
-service directly.
+identity in signed internal headers. The planned end state accepts those headers only on a connection
+authenticated by mTLS, but the Java migration is not implemented: today the gateway and services use
+the shared HMAC key, and network reachability is an additional boundary rather than mutual
+authentication.
 
 The trade-off is that the gateway becomes a availability dependency and a bottleneck. That is
 accepted: it is stateless, it is the cheapest thing to scale horizontally, and a payment platform
@@ -271,15 +272,17 @@ system of record.
 ## Observability
 
 Every metric carries `application`, `environment` and `version` tags, applied through a
-`MeterFilter` rather than at each call site so it cannot be forgotten. Health and Prometheus are the
-only actuator endpoints exposed, and both are reachable without a token because Prometheus and the
-container health check cannot present one; they are network-restricted instead. `env`, `configprops`,
-`heapdump` and `loggers` stay closed — they disclose configuration and secrets.
+`MeterFilter` rather than at each call site so it cannot be forgotten. The services expose health,
+info, Prometheus, and metrics endpoints; health/info/Prometheus skip internal identity verification
+for probes and scrapes, while metrics remains protected. The gateway permits only health and
+Prometheus without a JWT. Endpoints such as `env`, `configprops`, `heapdump`, and `loggers` are not
+exposed because they disclose configuration and secrets.
 
 Prometheus scrape configuration is a static list, matching the static compose file. Native
 service discovery would require mounting the Docker socket into the Prometheus container, which is
-a privilege escalation for a development tool. Phase 15 replaces it with Kubernetes service
-discovery.
+a privilege escalation for a development tool. The Helm chart does not deploy Prometheus or a
+Kubernetes service-discovery configuration; production monitoring must supply and validate that
+configuration separately.
 
 Alerts are derived from failure modes a payment platform actually has — consumer lag, connection
 pool exhaustion, growing lag, 5xx ratios — rather than from generic CPU and memory thresholds. The
@@ -287,58 +290,38 @@ Postgres and Redis exporter jobs are not declared yet, deliberately: a scrape ta
 permanently down is an alert that always fires, and always-firing alerts are how a monitoring
 system gets muted.
 
-## What is deliberately deferred
+## Deliberately deferred and production blockers
 
-Being explicit about what is missing matters more than listing what is present:
+The business APIs, authentication, database migrations, Kafka outboxes/consumers, and both browser
+clients exist. Their existence does not make the current Compose stack or Helm chart a production
+deployment. Work still required before production includes:
 
-- **No business endpoints.** Phase 1 services start, serve health and metrics, and nothing else.
-- **No authentication.** The gateway is fail-closed: it serves its operational endpoints and
-  returns 401 with the platform error contract for everything else. Phase 2 adds JWT verification.
-- **No Keycloak realm.** The server runs; the realm, clients, roles and mappers are Phase 2.
-- **No schema migrations.** Only customer-service has any, from Phase 3. The other seven databases
-  are created empty and are validated against an empty schema.
-- **No TLS, no network policy, no secrets manager.** Phase 15.
-- **No frontend.** Phase 11.
+- **Real payment, identity verification, and notification providers.** All are simulated; no live
+  money or identity decisions are made.
+- **Service-to-service mTLS.** The gateway and services still share an HMAC signing key. The PKI
+  chart and migration sequence are design/provisioning work only; Java does not yet verify client
+  certificates. See [ADR-0016](decisions/0016-mtls-migration-and-pki.md).
+- **Transport security and broker access control.** Compose uses plaintext; Kafka has no
+  authentication or topic ACLs. Production TLS, Kafka ACLs, and datastore transport security must be
+  configured and exercised.
+- **A complete production deployment path.** The Helm chart expects PostgreSQL, Redis, Kafka, an
+  identity provider, and monitoring to exist already. It has no ingress, frontend deployment,
+  external-secret integration, or pre-deploy migration job. Its native Kubernetes Secrets are
+  rendered from Helm values and stored in Helm release state; protect that state or replace it with
+  an external secret reference design.
+- **Browser OIDC in production.** Both UIs use Authorization Code + PKCE against `fintech-web`;
+  production still needs its own redirect URIs and IdP, and the React dashboard has no release image.
+- **PII operations.** There is no key re-encryption job and no audit record for who read a customer
+  profile. The PII master key remains a high-impact secret.
+- **Customer-domain event policy.** Payment, fraud, dispute, and settlement flows publish events via
+  outboxes. Customer registration, KYC, and erasure do not currently emit domain events; decide and
+  implement the audit/erasure requirements before adding consumers.
+- **Disaster recovery.** The local backup helper is not an encrypted, point-in-time production backup
+  system. Configure managed backups, retention, recovery objectives, and tested restore procedures.
 
-### Added in Phase 3, and still open
+### Historical migration issue
 
-- **No events are published.** `EventEnvelope` and `KafkaTopics` exist and `TopicCatalogueTest` keeps
-  the catalogue honest, but no service produces anything, so the transactional outbox described
-  under [Consistency](#consistency) is still unbuilt. Phase 3 was completed without it, and the
-  decision is recorded here rather than left as an omission: the customer path's event requirements
-  are genuinely unsettled, not merely unstarted.
-
-  What is not settled, and should be before any event is emitted:
-
-  - **Does the customer path need the outbox at all?** The outbox is specified for the *transaction*
-    path. Registration, erasure and a KYC outcome are not part of a money movement, and paying for
-    a publisher, a drain loop and a background re-encryption job to announce them may not be worth it.
-  - **A lost erasure event is worse than a lost transaction event.** `audit-service` consumes
-    `audit-events` and a regulatory trail has to be complete. If customer erasure emits an event,
-    best-effort publishing is not good enough, which argues for the outbox for *that* event at least.
-  - **A KYC decision is a compliance decision.** If it is announced to a second service, a
-    subscriber may act on it, and the subscriber then needs idempotency on `eventId` and the
-    same version byte the ciphertext uses.
-
-  Publishing straight to Kafka before this is settled would contradict the outbox decision above, so
-  it is left undone on purpose.
-
-### A bug this phase found by running it
-
-- **`baseline-on-migrate` was suppressing the first migration in all eight services.** Set to `true`
-  with Flyway's default baseline version of 1, it recorded a baseline *at* version 1 on the empty
-  database, which marks `V1` as already applied, so the migration never ran. It only became visible
-  by running the service: the tables had to be created by hand to get past Hibernate's schema
-  validation, which is not a symptom anyone would trace back to a Flyway setting.
-
-  It is now `false` everywhere, with the reasoning in each `application.yml`. The lesson is that
-  `baseline-on-migrate` is only correct for a database that *already has* a schema this repository
-  does not know about, and every database here is created empty by the Postgres init script. It is
-  the kind of setting that looks like a safety net and is a loaded gun.
-- **No re-encryption job.** Rotation is a deploy that changes the key version; records written under
-  the previous version stop being readable until they are rewritten. The background re-encryption
-  that closes that window is not built, so a rotation is currently only safe once every row has been
-  touched by an ordinary write.
-- **No PII access logging beyond masking.** Reads are masked by the service, but there is no record of
-  *who* read *which* customer. For a support caller reading a profile, that is the access log an
-  auditor would ask for, and it does not exist yet.
+An earlier version set `baseline-on-migrate: true` for empty databases. Flyway then recorded a
+baseline at version 1, causing the first migration to be skipped. It is now `false` for every
+database-backed service, because databases created by the PostgreSQL init script start empty. Keep
+that invariant: baseline-on-migrate is only appropriate when deliberately adopting an existing schema.

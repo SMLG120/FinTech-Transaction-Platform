@@ -61,39 +61,35 @@ function stubFetch(handler) {
   return async (url, options) => handler(url, options);
 }
 
-/** Answers the token URL with a token and routes everything else to the handler. */
+/** A client that already holds a token (oidc.js obtained it) and routes calls to the handler. */
 function stubLoggedIn(handler) {
-  return stubFetch(async (url, options) => {
-    if (String(url).includes('openid-connect/token')) {
-      return { ok: true, json: async () => ({ access_token: 'tok-123' }) };
-    }
-    return handler(url, options);
-  });
+  const api = new ApiClient(DEFAULT_CONFIG, stubFetch(handler));
+  api.setToken('tok-123');
+  return api;
 }
 
-test('login posts the password grant and keeps the token in memory', async () => {
-  let seen = null;
-  const api = new ApiClient(DEFAULT_CONFIG, stubFetch(async (url, options) => {
-    seen = { url, options };
-    return { ok: true, json: async () => ({ access_token: 'tok-123' }) };
-  }));
+test('setToken installs the token in memory, and logout or a blank token clears it', () => {
+  const api = new ApiClient(DEFAULT_CONFIG, stubFetch(async () => ({ ok: true, json: async () => ({}) })));
   assert.equal(api.loggedIn, false);
-  await api.login('a@b.test', 'secret');
+  api.setToken('tok-123');
   assert.equal(api.loggedIn, true);
-  assert.match(seen.url, /protocol\/openid-connect\/token$/);
-  assert.match(seen.options.body, /grant_type=password/);
-  assert.match(seen.options.body, /client_id=fintech-web/);
   api.logout();
   assert.equal(api.loggedIn, false);
+  api.setToken('tok-123');
+  api.setToken('');
+  assert.equal(api.loggedIn, false);
+});
+
+test('the client has no password login at all', () => {
+  assert.equal(typeof ApiClient.prototype.login, 'undefined');
 });
 
 test('requests carry the bearer token, a correlation id, and the key when given', async () => {
   let seen = null;
-  const api = new ApiClient(DEFAULT_CONFIG, stubLoggedIn(async (url, options) => {
+  const api = stubLoggedIn(async (url, options) => {
     seen = { url, options };
     return { ok: true, json: async () => ({}) };
-  }));
-  await api.login('a@b.test', 'secret');
+  });
   await api.post('/api/v1/transactions', { amount: '1.00' }, 'key-1');
   assert.equal(seen.options.headers.Authorization, 'Bearer tok-123');
   assert.match(seen.options.headers['X-Correlation-Id'], /^[0-9a-f-]{36}$/);
@@ -103,11 +99,10 @@ test('requests carry the bearer token, a correlation id, and the key when given'
 
 test('a bare GET sends no content type and no key', async () => {
   let seen = null;
-  const api = new ApiClient(DEFAULT_CONFIG, stubLoggedIn(async (url, options) => {
+  const api = stubLoggedIn(async (url, options) => {
     seen = options.headers;
     return { ok: true, json: async () => ({}) };
-  }));
-  await api.login('a@b.test', 'secret');
+  });
   await api.get('/api/v1/accounts/balance?currency=GBP');
   assert.equal(seen['Content-Type'], undefined);
   assert.equal(seen['Idempotency-Key'], undefined);
@@ -115,15 +110,11 @@ test('a bare GET sends no content type and no key', async () => {
 });
 
 test('API errors surface code and correlation id for the ticket', async () => {
-  const api = new ApiClient(
-    DEFAULT_CONFIG,
-    stubLoggedIn(async () => ({
-      ok: false,
-      status: 409,
-      json: async () => ({ error: 'DISPUTE_ALREADY_OPEN', message: 'open already', correlationId: 'c-9' }),
-    })),
-  );
-  await api.login('a@b.test', 'secret');
+  const api = stubLoggedIn(async () => ({
+    ok: false,
+    status: 409,
+    json: async () => ({ error: 'DISPUTE_ALREADY_OPEN', message: 'open already', correlationId: 'c-9' }),
+  }));
   await assert.rejects(api.get('/api/v1/disputes'), (error) => {
     assert.ok(error instanceof ApiError);
     assert.equal(error.code, 'DISPUTE_ALREADY_OPEN');

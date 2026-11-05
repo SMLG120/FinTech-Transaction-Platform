@@ -182,6 +182,7 @@ logging:
     org.springframework.kafka: ${LOG_LEVEL_KAFKA:WARN}
     org.apache.kafka: ${LOG_LEVEL_KAFKA_CLIENT:WARN}
     org.hibernate.SQL: ${LOG_LEVEL_SQL:WARN}
+    org.hibernate.engine.jdbc.spi.SqlExceptionHelper: OFF
   structured:
     # ECS JSON so log aggregation can index fields instead of grepping strings.
     format:

@@ -4,11 +4,51 @@
  * no framework, no build step, served as static files.
  */
 import { ApiClient, ApiError, formatMoney, loadConfig, newIdempotencyKey } from './api.js';
+import { beginLogin, completeLogin, decodeJwtPayload, isCallback, logoutUrl, refreshTokens } from './oidc.js';
 
 const $ = (id) => document.getElementById(id);
 
 let api = null;
+let config = null;
 let customerId = null;
+/** In memory only, like the access token: a reload means one more (SSO-silent) trip to Keycloak. */
+let session = null;
+let refreshTimer = null;
+
+/** Exactly the redirect URI registered on the fintech-web client: this page, no query. */
+function redirectUri() {
+  return new URL('./', window.location.href).href;
+}
+
+function startSession(tokens) {
+  session = { ...session, ...tokens, idToken: tokens.idToken || session?.idToken || null };
+  api.setToken(tokens.accessToken);
+  clearTimeout(refreshTimer);
+  // Refresh 30 s before expiry (Keycloak's access tokens live 300 s in this realm). A failed
+  // refresh means the SSO session ended — idle timeout, admin logout, password change — so the
+  // UI drops to the sign-in screen rather than retrying with a token the gateway will refuse.
+  const delayMs = Math.max(5, tokens.expiresIn - 30) * 1000;
+  refreshTimer = setTimeout(async () => {
+    try {
+      if (!session?.refreshToken) throw new Error('no refresh token');
+      startSession(await refreshTokens({ config, refreshToken: session.refreshToken }));
+    } catch {
+      endSession();
+      showError('auth-error', new Error('Your session ended. Please sign in again.'));
+    }
+  }, delayMs);
+}
+
+function endSession() {
+  clearTimeout(refreshTimer);
+  refreshTimer = null;
+  session = null;
+  api.setToken(null);
+  customerId = null;
+  $('app-view').hidden = true;
+  $('onboarding-view').hidden = true;
+  $('auth-view').hidden = false;
+}
 
 function showError(box, error) {
   const el = $(box);
@@ -38,34 +78,26 @@ async function guarded(form, fn) {
 }
 
 async function boot() {
-  const config = await loadConfig();
+  config = await loadConfig();
   api = new ApiClient(config);
 
-  $('login-form').addEventListener('submit', (event) => {
-    event.preventDefault();
+  $('login-button').addEventListener('click', async () => {
     clearError('auth-error');
-    guarded(event.target, async () => {
-      try {
-        await api.login($('login-email').value.trim(), $('login-password').value);
-        await enter();
-      } catch (error) {
-        showError('auth-error', error);
-      }
-    });
+    try {
+      window.location.assign(await beginLogin({ config, redirectUri: redirectUri(), storage: window.sessionStorage }));
+    } catch (error) {
+      showError('auth-error', error);
+    }
   });
 
   $('register-form').addEventListener('submit', (event) => {
     event.preventDefault();
-    clearError('auth-error');
+    clearError('onboarding-error');
     guarded(event.target, async () => {
       try {
-        // The login identity and the customer profile are separate steps on purpose: Keycloak
-        // authenticates, customer-service onboards. Registration here only creates the Keycloak
-        // side implicitly — the operator provisions the login first (see scripts), then this
-        // form creates the profile, runs the synthetic identity check, and signs in.
-        const email = $('reg-email').value.trim();
-        const password = $('reg-password').value;
-        await api.login(email, password);
+        // Keycloak owns the login; customer-service owns the profile. The email comes from the
+        // signed-in identity rather than a form field, so a profile cannot claim someone else's.
+        const email = (decodeJwtPayload(session?.idToken) || {}).email || '';
         const profile = await api.registerCustomer({
           fullName: $('reg-name').value.trim(),
           dateOfBirth: $('reg-dob').value,
@@ -88,7 +120,7 @@ async function boot() {
         });
         await enter();
       } catch (error) {
-        showError('auth-error', error);
+        showError('onboarding-error', error);
       }
     });
   });
@@ -97,10 +129,10 @@ async function boot() {
     tab.addEventListener('click', () => switchTab(tab.dataset.tab));
   });
   $('logout').addEventListener('click', () => {
-    api.logout();
-    customerId = null;
-    $('app-view').hidden = true;
-    $('auth-view').hidden = false;
+    const idToken = session?.idToken;
+    endSession();
+    // End the Keycloak SSO session too; otherwise "Sign in" would silently log straight back in.
+    window.location.assign(logoutUrl({ config, idToken, postLogoutRedirectUri: redirectUri() }));
   });
 
   $('balance-currency').addEventListener('change', refreshOverview);
@@ -184,10 +216,39 @@ async function boot() {
   });
 }
 
+/** Handles the redirect back from Keycloak, if this page load is one. */
+async function handleCallback() {
+  if (!isCallback(window.location.href)) return;
+  const href = window.location.href;
+  // Strip ?code&state from the address bar and history before anything else can read them.
+  window.history.replaceState(null, '', redirectUri());
+  try {
+    const { tokens } = await completeLogin({ config, href, storage: window.sessionStorage });
+    startSession(tokens);
+    await enter();
+  } catch (error) {
+    endSession();
+    showError('auth-error', error);
+  }
+}
+
 async function enter() {
-  const me = await api.myProfile();
+  let me;
+  try {
+    me = await api.myProfile();
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) {
+      // Signed in, but no customer profile yet: onboard instead of failing.
+      $('auth-view').hidden = true;
+      $('onboarding-email').textContent = (decodeJwtPayload(session?.idToken) || {}).email || '';
+      $('onboarding-view').hidden = false;
+      return;
+    }
+    throw error;
+  }
   customerId = me.id;
   $('auth-view').hidden = true;
+  $('onboarding-view').hidden = true;
   $('app-view').hidden = false;
   $('session').textContent = me.email || '';
   switchTab('overview');
@@ -335,4 +396,6 @@ async function refreshDisputes() {
   }
 }
 
-boot().catch((error) => showError('auth-error', error));
+boot()
+  .then(handleCallback)
+  .catch((error) => showError('auth-error', error));

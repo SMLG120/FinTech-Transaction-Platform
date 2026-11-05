@@ -67,6 +67,12 @@ public final class DisputeErrors {
      * <p>403 rather than 404: a permissions mistake on a case that exists must not read as a
      * missing case.
      */
+    /** Separation of duties: nobody decides a refund on a case they opened themselves. */
+    public static final ErrorCode SELF_RESOLUTION = ErrorCode.of(
+            "DISPUTE_SELF_RESOLUTION",
+            HttpStatus.FORBIDDEN,
+            "A dispute must be decided by someone other than the person who opened it");
+
     public static final ErrorCode FORBIDDEN =
             ErrorCode.of("DISPUTE_FORBIDDEN", HttpStatus.FORBIDDEN, "This case is not yours to work");
 

@@ -346,6 +346,17 @@ public class LedgerService {
      * <p>Called by funding only, and the insert is tolerant of losing the race: see
      * {@link #createIfAbsent}.
      */
+    /**
+     * Takes the row locks on a customer's accounts in one currency, in the same id order every posting
+     * uses, so a caller can make a decision (the daily limit) that must not be invalidated by a
+     * concurrent payment before its own posting commits. A customer with no accounts has nothing to
+     * lock and nothing to spend, so the empty case needs no special handling.
+     */
+    @Transactional
+    public void lockCustomerAccounts(String ownerSubjectDigest, Currency currency) {
+        accounts.lockForUpdate(ownerSubjectDigest, LedgerAccountType.customerTypes(), currency.getCurrencyCode());
+    }
+
     @Transactional
     public void ensureAccountsExist(String ownerSubjectDigest, Currency currency) {
         for (LedgerAccountType type : LedgerAccountType.customerTypes()) {

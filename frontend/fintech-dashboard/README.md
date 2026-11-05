@@ -1,9 +1,10 @@
 # FinTech Dashboard — React + TypeScript Frontend
 
-The customer/staff dashboard for the Secure FinTech Transaction Platform.
-Replaces the dependency-free static UI in `web/` with a production-style
-React application. Every page reads from the real gateway APIs — no fake
-backends, no fabricated figures.
+Development customer/staff dashboard for the Secure FinTech Transaction
+Platform. Pages call the real gateway APIs; there is no fake backend. This
+source app is not a production deployment: Compose does not build or serve it,
+and its password-grant login must be replaced with Authorization Code + PKCE
+before it is exposed outside local development.
 
 > **Synthetic data only, no real money.** Card numbers are shown once at
 > issue and never stored; the platform holds tokens and last-four digits.
@@ -22,14 +23,14 @@ backends, no fabricated figures.
 
 | Concern | Choice |
 | --- | --- |
-| Build / language | Vite 5 + React 18 + TypeScript (strict, `noUnusedLocals`) |
-| Routing | React Router 6, role-guarded routes |
+| Build / language | Vite 6 + React 18 + TypeScript (strict, `noUnusedLocals`) |
+| Routing | React Router 7, role-guarded routes |
 | Server state | TanStack Query (caching, refetch, loading/error states) |
 | Forms | React Hook Form + Zod (`@hookform/resolvers`) |
 | Charts | Recharts, lazy-loaded in its own chunk |
 | Icons | Lucide |
 | Animation | Framer Motion (`MotionConfig reducedMotion="user"`, CSS kill-switch) |
-| Tests | Vitest + Testing Library + jsdom |
+| Tests | Vitest 4 + Testing Library + jsdom |
 
 No Tailwind, no component-framework dependency — the design system is a
 small set of CSS tokens + primitives, which keeps the bundle and the API
@@ -49,7 +50,7 @@ npm run dev            # http://localhost:5173
 | `npm run dev` | Vite dev server on `:5173` |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run lint` | ESLint, zero warnings allowed |
-| `npm test -- --run` | Vitest suite (40 tests, incl. wire-contract parsing) |
+| `npm test -- --run` | Vitest suite (42 tests, incl. wire-contract parsing) |
 | `npm run build` | Typecheck + production bundle in `dist/` |
 | `npm run preview` | Serve the production bundle locally |
 
@@ -94,21 +95,31 @@ with a finding, never an error.
 ## Authentication flow
 
 ```
-browser ──password grant (dev only)──▶ Keycloak ──JWT──▶ gateway ──signed headers──▶ service
+browser ──redirect──▶ Keycloak login page ──?code&state──▶ /auth/callback
+        ──code + PKCE verifier──▶ Keycloak token endpoint ──JWT──▶ gateway ──signed headers──▶ service
 ```
 
-1. `LoginPage` posts `grant_type=password + client_id=fintech-web` to the
-   realm token endpoint (see `scripts/get-token.sh` for the same call).
-   Production moves to Authorization Code + PKCE in one `login` method
-   (ADR-0013).
-2. `AuthProvider` holds the token in `useState`, wires it into `ApiClient`,
-   and decodes `realm_access.roles` + username **for UI gating only**.
-3. `RequireAuth` redirects to `/login` (remembering `from`); `RequireRole`
+1. `LoginPage` has no password field. "Sign in securely" calls `beginLogin()`
+   (`src/api/authApi.ts`): a one-time `code_verifier`, `state` and `nonce` go to
+   `sessionStorage` for this tab only, and the browser is sent to Keycloak with
+   the S256 `code_challenge`. The dashboard never sees the password, so MFA,
+   lockout and password policy all live in Keycloak.
+2. Keycloak redirects to `/auth/callback`. `AuthCallbackPage` calls
+   `completeLogin()`, which checks `state` (login CSRF), consumes the pending
+   entry exactly once, redeems code + verifier, and checks the ID token's
+   `nonce`, `iss` and `aud`. The callback URL is replaced in history.
+3. `AuthProvider` holds the access, refresh and ID tokens **in memory only**,
+   refreshes 30 s before expiry (rotating refresh tokens), and on sign-out
+   calls Keycloak's end-session endpoint so SSO ends too. A reload costs one
+   redirect, which Keycloak's SSO cookie answers without a prompt.
+4. `AuthProvider` decodes `realm_access.roles` + username **for UI gating only**.
+5. `RequireAuth` redirects to `/login` (remembering `from`); `RequireRole`
    renders an inline 403 explanation. The gateway and services enforce the
    real policy — the UI only decides what to show.
 
 Local test logins: `customer@`, `agent@`, `auditor@`, `compliance@`,
-`analyst@`, `settlement@`, `admin@fintech.test` / `fintech-dev-only`.
+`analyst@`, `settlement@`, `admin@fintech.test`, with the random `SEED_USER_PASSWORD`
+that `./scripts/bootstrap.sh` wrote to the repository's `.env`.
 
 ## Route structure
 
@@ -182,15 +193,13 @@ Dashboard → Transactions → Cards → Disputes. Staff views: `analyst@` (frau
 `auditor@` (audit), `settlement@` (settlement), `agent@` (notifications,
 customers).
 
-## Cutover notes (when this replaces `web/`)
+## Production cutover blockers
 
-Config-only, no service changes:
-
-1. Gateway: add `http://localhost:3001` (prod origin) alongside the dev
-   origin in `GATEWAY_CORS_ALLOWED_ORIGINS`.
-2. Keycloak realm: keep `http://localhost:3001` in `fintech-web.webOrigins`
-   (dev `:5173` needed only for local `npm run dev`).
-3. `web-frontend` image: build `frontend/fintech-dashboard` (`npm run build`)
-   and serve `dist/` from nginx with the existing `nginx.conf` security
-   headers; SPA routing needs the existing `try_files … /index.html`.
-4. Re-run `./scripts/verify-frontend-lifecycle.sh` against the new origin.
+This project has not completed a production cutover. Browser sign-in already
+uses Authorization Code + PKCE. Before serving this app outside local
+development, register the production redirect URI on the client, configure a
+production identity provider and exact gateway/IdP origins, build and publish
+an immutable frontend image, serve it over HTTPS with an appropriate Content
+Security Policy and security headers, and run browser end-to-end tests against
+the production topology. The dev-only `fintech-cli` client (password
+grant for scripts) and the `localhost` defaults must not be carried into production.

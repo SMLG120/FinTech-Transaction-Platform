@@ -44,12 +44,16 @@ case "${IDENTITY}" in
 esac
 
 USERNAME="${IDENTITY}@fintech.test"
-PASSWORD="fintech-dev-only"
+PASSWORD="$(grep -E '^SEED_USER_PASSWORD=' "${ENV_FILE}" | cut -d= -f2- | tr -d '"')"
+if [[ -z "${PASSWORD}" || "${PASSWORD}" == "CHANGE_ME" ]]; then
+  echo "SEED_USER_PASSWORD is missing from .env; run ./scripts/bootstrap.sh" >&2
+  exit 1
+fi
 
 response="$(curl -fsS -X POST "${ISSUER}/protocol/openid-connect/token" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "grant_type=password" \
-  -d "client_id=fintech-web" \
+  -d "client_id=fintech-cli" \
   -d "username=${USERNAME}" \
   -d "password=${PASSWORD}")" || {
   echo "could not obtain a token for ${USERNAME}." >&2

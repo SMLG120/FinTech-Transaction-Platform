@@ -13,6 +13,7 @@
 .env
 .env.*
 !.env.example
+backups/
 *.pem
 *.key
 *.p12

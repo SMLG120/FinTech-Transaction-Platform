@@ -148,7 +148,8 @@ public class DisputeService {
      */
     @Transactional
     public DisputeEvidenceEntity addEvidence(UUID disputeId, String body, InternalIdentity caller) {
-        DisputeEntity dispute = require(disputeId);
+        DisputeEntity dispute = disputes.findByIdForUpdate(disputeId)
+                .orElseThrow(() -> DisputeErrors.NOT_FOUND.exception("No dispute with id " + disputeId));
         if (dispute.getStatus() != DisputeStatus.OPEN) {
             throw DisputeErrors.NOT_OPEN.exception("Dispute " + disputeId + " is already " + dispute.getStatus());
         }
@@ -168,7 +169,13 @@ public class DisputeService {
      */
     @Transactional
     public DisputeEntity resolve(UUID disputeId, boolean refund, String resolution, InternalIdentity caller) {
-        DisputeEntity dispute = require(disputeId);
+        DisputeEntity dispute = disputes.findByIdForUpdate(disputeId)
+                .orElseThrow(() -> DisputeErrors.NOT_FOUND.exception("No dispute with id " + disputeId));
+        if (caller.subject().equals(dispute.getOpenedBySubject())) {
+            // PLATFORM_ADMIN may both open and decide, so without this one person could raise a
+            // dispute on their own payment and approve their own refund.
+            throw DisputeErrors.SELF_RESOLUTION.exception();
+        }
         if (dispute.getStatus() != DisputeStatus.OPEN) {
             throw DisputeErrors.NOT_OPEN.exception("Dispute " + disputeId + " is already " + dispute.getStatus());
         }

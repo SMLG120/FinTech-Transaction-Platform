@@ -14,27 +14,27 @@
   <main>
     <section id="auth-view">
       <h2>Sign in</h2>
-      <form id="login-form">
-        <label>Email <input id="login-email" type="email" required autocomplete="username" placeholder="you@fintech.test"></label>
-        <label>Password <input id="login-password" type="password" required autocomplete="current-password"></label>
-        <button type="submit">Sign in</button>
-      </form>
-      <details>
-        <summary>New here? Create an account</summary>
-        <form id="register-form">
-          <label>Full name <input id="reg-name" required placeholder="Dana Okonkwo"></label>
-          <label>Date of birth <input id="reg-dob" type="date" required value="1991-04-17"></label>
-          <label>Email <input id="reg-email" type="email" required placeholder="dana@example.test"></label>
-          <label>Phone <input id="reg-phone" required value="+447700900123"></label>
-          <label>Login password <input id="reg-password" type="password" required autocomplete="new-password"></label>
-          <label>Address line 1 <input id="reg-line1" required value="12 Alder Way"></label>
-          <label>City <input id="reg-city" required value="Manchester"></label>
-          <label>Postal code <input id="reg-postcode" required value="M1 4BT"></label>
-          <button type="submit">Create account</button>
-        </form>
-        <p class="hint">Identity check runs against the synthetic provider with the name you gave.</p>
-      </details>
+      <p>You sign in on the bank's identity page. This app never sees your password.</p>
+      <button id="login-button" type="button">Sign in securely</button>
+      <p class="hint">New customers: your login is created first (see the README), then you complete
+      your profile here after signing in.</p>
       <p id="auth-error" class="error" hidden></p>
+    </section>
+
+    <section id="onboarding-view" hidden>
+      <h2>Complete your profile</h2>
+      <p>Signed in as <span id="onboarding-email" class="mono"></span>. One more step before you can bank.</p>
+      <form id="register-form">
+        <label>Full name <input id="reg-name" required placeholder="Dana Okonkwo"></label>
+        <label>Date of birth <input id="reg-dob" type="date" required value="1991-04-17"></label>
+        <label>Phone <input id="reg-phone" required value="+447700900123"></label>
+        <label>Address line 1 <input id="reg-line1" required value="12 Alder Way"></label>
+        <label>City <input id="reg-city" required value="Manchester"></label>
+        <label>Postal code <input id="reg-postcode" required value="M1 4BT"></label>
+        <button type="submit">Create profile</button>
+      </form>
+      <p class="hint">Identity check runs against the synthetic provider with the name you gave.</p>
+      <p id="onboarding-error" class="error" hidden></p>
     </section>
 
     <section id="app-view" hidden>

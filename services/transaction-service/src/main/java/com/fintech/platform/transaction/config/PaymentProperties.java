@@ -28,7 +28,10 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  */
 @ConfigurationProperties(prefix = "app.payments")
 public record PaymentProperties(
-        Money maxTransactionAmount, Money maxDailyAmount, java.util.List<Currency> supportedCurrencies) {
+        Money maxTransactionAmount,
+        Money maxDailyAmount,
+        java.util.List<Currency> supportedCurrencies,
+        boolean sandboxMode) {
 
     public PaymentProperties {
         if (maxTransactionAmount == null) {
@@ -86,6 +89,17 @@ public record PaymentProperties(
     }
 
     /** Whether a payment in this currency can be accepted at all. */
+    /**
+     * Whether customers may top up their own balance and reverse captured payments themselves.
+     *
+     * <p>Both are conveniences for a demo deployment with no funding rail and no merchant, and both
+     * are money-creation or money-recovery paths a real customer must never hold. Off unless a
+     * deployment opts in explicitly, so forgetting the setting fails safe.
+     */
+    public boolean isSandbox() {
+        return sandboxMode;
+    }
+
     public boolean supports(Currency currency) {
         return supportedCurrencies.contains(currency);
     }

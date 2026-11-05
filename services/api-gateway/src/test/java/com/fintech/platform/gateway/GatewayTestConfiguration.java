@@ -82,6 +82,10 @@ class GatewayTestConfiguration {
 
         @Override
         public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
+            if (exchange.getRequest().getMethod() == org.springframework.http.HttpMethod.OPTIONS
+                    && "/register".equals(exchange.getRequest().getURI().getPath())) {
+                return chain.filter(exchange);
+            }
             byte[] body = "{\"reached\":\"downstream\"}".getBytes(StandardCharsets.UTF_8);
             ServerHttpResponse response = exchange.getResponse();
             response.setStatusCode(HttpStatus.OK);

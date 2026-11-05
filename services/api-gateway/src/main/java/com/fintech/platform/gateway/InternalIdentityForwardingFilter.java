@@ -81,7 +81,7 @@ class InternalIdentityForwardingFilter implements GlobalFilter, Ordered {
             // A username or role that cannot be represented is never forwarded as a partial header set.
             // A service would reject it anyway, and a half-signed identity in a packet capture is more
             // misleading than an absent one.
-            log.error("could not sign internal identity for subject {}: {}", jwt.getSubject(), e.getMessage());
+            log.error("could not sign internal identity: {}", e.getMessage());
             return strip(exchange);
         }
         // Strip first, then sign, in one pass over the same header map. Signing alone would overwrite

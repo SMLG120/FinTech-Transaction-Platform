@@ -4,13 +4,14 @@ import com.fintech.platform.auth.customer.CustomerProvisioningClient;
 import com.fintech.platform.auth.customer.CustomerProvisioningException;
 import com.fintech.platform.auth.keycloak.KeycloakProvisioningException;
 import com.fintech.platform.auth.keycloak.KeycloakUserProvisioningService;
-import java.util.logging.Level;
-import java.util.logging.Logger;
+import java.util.Locale;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 @Service
 public class RegistrationService {
-    private static final Logger log = Logger.getLogger(RegistrationService.class.getName());
+    private static final Logger log = LoggerFactory.getLogger(RegistrationService.class);
 
     private final KeycloakUserProvisioningService keycloak;
     private final CustomerProvisioningClient customers;
@@ -21,15 +22,24 @@ public class RegistrationService {
     }
 
     public RegistrationDtos.RegisterResponse register(RegistrationDtos.RegisterRequest request) {
-        String subject = keycloak.createCustomer(request.email(), request.email(), request.password());
+        String email = request.email().trim().toLowerCase(Locale.ROOT);
+        String subject;
         try {
-            CustomerProvisioningClient.CustomerProfile profile = customers.provisionCustomer(
-                    new CustomerProvisioningClient.CustomerProvisioningRequest(
+            subject = keycloak.createCustomer(email, email, request.password(), request.fullName());
+        } catch (KeycloakProvisioningException ex) {
+            if (ex.accountConflict()) {
+                throw RegistrationErrorCodes.EMAIL_ALREADY_REGISTERED.exception();
+            }
+            throw ex;
+        }
+        try {
+            CustomerProvisioningClient.CustomerProfile profile =
+                    customers.provisionCustomer(new CustomerProvisioningClient.CustomerProvisioningRequest(
                             subject,
                             request.fullName(),
                             request.dateOfBirth().toString(),
                             request.nationality(),
-                            request.email(),
+                            email,
                             request.phone(),
                             new CustomerProvisioningClient.Address(
                                     request.address().line1(),
@@ -48,7 +58,7 @@ public class RegistrationService {
         try {
             keycloak.deleteUser(subject);
         } catch (KeycloakProvisioningException ex) {
-            log.log(Level.SEVERE, "Registration compensation failed for Keycloak user " + subject, ex);
+            log.error("Registration compensation failed for a provisioned customer");
         }
     }
 

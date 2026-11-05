@@ -2,7 +2,7 @@
   "realm": "fintech",
   "displayName": "FinTech Platform (local development)",
   "enabled": true,
-  "sslRequired": "none",
+  "sslRequired": "external",
   "registrationAllowed": false,
   "registrationEmailAsUsername": false,
   "rememberMe": false,
@@ -18,7 +18,8 @@
   "waitIncrementSeconds": 60,
   "quickLoginCheckMilliSeconds": 1000,
   "maxDeltaTimeSeconds": 43200,
-  "failureFactor": 10,
+  "failureFactor": 5,
+  "passwordPolicy": "length(12) and maxLength(128) and upperCase(1) and lowerCase(1) and digits(1) and notUsername(undefined) and notEmail(undefined) and passwordHistory(3)",
   "accessTokenLifespan": 300,
   "accessTokenLifespanForImplicitFlow": 300,
   "ssoSessionIdleTimeout": 1800,
@@ -94,35 +95,83 @@
     },
     {
       "clientId": "fintech-web",
-      "name": "FinTech Web and CLI (local development)",
-      "description": "Public client used by local tooling to obtain tokens. directAccessGrantsEnabled exists so scripts/get-token.sh can fetch a token without a browser; it is disabled in every deployed environment.",
+      "name": "FinTech Web (browser sign-in)",
+      "description": "Public browser client for both UIs. Authorization Code + PKCE (S256) only: no password grant, no implicit flow, no offline tokens, exact redirect URIs. Scripts use fintech-cli instead.",
       "enabled": true,
       "protocol": "openid-connect",
       "publicClient": true,
       "bearerOnly": false,
       "standardFlowEnabled": true,
-      "directAccessGrantsEnabled": true,
+      "directAccessGrantsEnabled": false,
       "serviceAccountsEnabled": false,
       "frontchannelLogout": true,
-      "rootUrl": "http://localhost:3000",
-      "baseUrl": "/",
+      "rootUrl": "",
+      "baseUrl": "",
       "adminUrl": "",
       "redirectUris": [
-        "http://localhost:3000/*",
-        "http://localhost:8081/*"
+        "http://localhost:3001/",
+        "http://localhost:5173/auth/callback"
       ],
       "webOrigins": [
-        "http://localhost:3000",
         "http://localhost:3001",
-        "http://localhost:8081",
         "http://localhost:5173"
       ],
-      "optionalClientScopes": [
-        "offline_access"
-      ],
+      "optionalClientScopes": [],
       "attributes": {
         "access.token.lifespan": "300",
-        "post.logout.redirect.uris": "http://localhost:3000/*",
+        "post.logout.redirect.uris": "http://localhost:3001/##http://localhost:5173/login",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "backchannel.logout.session.required": "true",
+        "require.pushed.authorization.requests": "false",
+        "pkce.code.challenge.method": "S256",
+        "use.refresh.tokens": "true",
+        "client.use.lightweight.access.token.enabled": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "fintech-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "fintech-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ],
+      "fullScopeAllowed": true,
+      "defaultClientScopes": [
+        "roles",
+        "web-origins",
+        "profile",
+        "email",
+        "acr",
+        "basic"
+      ],
+      "implicitFlowEnabled": false
+    },
+    {
+      "clientId": "fintech-cli",
+      "name": "FinTech CLI (local development only)",
+      "description": "Dev-only public client for scripts/get-token.sh and the verify scripts. Password grant only, no browser flows, no web origins. Must not exist in any deployed realm.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "bearerOnly": false,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "frontchannelLogout": false,
+      "rootUrl": "",
+      "baseUrl": "",
+      "adminUrl": "",
+      "redirectUris": [],
+      "webOrigins": [],
+      "optionalClientScopes": [],
+      "attributes": {
+        "access.token.lifespan": "300",
         "oauth2.device.authorization.grant.enabled": "false",
         "backchannel.logout.session.required": "true",
         "require.pushed.authorization.requests": "false"
@@ -149,7 +198,30 @@
         "email",
         "acr",
         "basic"
-      ]
+      ],
+      "implicitFlowEnabled": false
+    },
+    {
+      "clientId": "fintech-registration",
+      "name": "Customer self-registration (auth-service)",
+      "description": "Confidential client used only by auth-service to create CUSTOMER users. Service account only: no browser flow, no password grant. Its secret is injected at import from KEYCLOAK_ADMIN_CLIENT_SECRET and never committed.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "bearerOnly": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${KEYCLOAK_ADMIN_CLIENT_SECRET}",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "frontchannelLogout": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "attributes": {
+        "access.token.lifespan": "60"
+      },
+      "fullScopeAllowed": false
     }
   ],
   "users": [
@@ -163,7 +235,7 @@
       "credentials": [
         {
           "type": "password",
-          "value": "fintech-dev-only",
+          "value": "${SEED_USER_PASSWORD}",
           "temporary": false
         }
       ],
@@ -181,7 +253,7 @@
       "credentials": [
         {
           "type": "password",
-          "value": "fintech-dev-only",
+          "value": "${SEED_USER_PASSWORD}",
           "temporary": false
         }
       ],
@@ -199,7 +271,7 @@
       "credentials": [
         {
           "type": "password",
-          "value": "fintech-dev-only",
+          "value": "${SEED_USER_PASSWORD}",
           "temporary": false
         }
       ],
@@ -217,7 +289,7 @@
       "credentials": [
         {
           "type": "password",
-          "value": "fintech-dev-only",
+          "value": "${SEED_USER_PASSWORD}",
           "temporary": false
         }
       ],
@@ -235,7 +307,7 @@
       "credentials": [
         {
           "type": "password",
-          "value": "fintech-dev-only",
+          "value": "${SEED_USER_PASSWORD}",
           "temporary": false
         }
       ],
@@ -253,7 +325,7 @@
       "credentials": [
         {
           "type": "password",
-          "value": "fintech-dev-only",
+          "value": "${SEED_USER_PASSWORD}",
           "temporary": false
         }
       ],
@@ -271,13 +343,24 @@
       "credentials": [
         {
           "type": "password",
-          "value": "fintech-dev-only",
+          "value": "${SEED_USER_PASSWORD}",
           "temporary": false
         }
       ],
       "realmRoles": [
         "SETTLEMENT_OPERATOR"
       ]
+    },
+    {
+      "username": "service-account-fintech-registration",
+      "enabled": true,
+      "serviceAccountClientId": "fintech-registration",
+      "clientRoles": {
+        "realm-management": [
+          "manage-users",
+          "view-realm"
+        ]
+      }
     }
   ]
 }

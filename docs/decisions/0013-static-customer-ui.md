@@ -1,6 +1,6 @@
 # ADR-0013: A static customer UI with no backend of its own
 
-- Status: accepted, implemented in Phase 11
+- Status: accepted, implemented in Phase 11; authentication amended 2026-11 (see the end)
 - Date: 2026-09-27
 - Phase: 11
 
@@ -112,3 +112,38 @@ typo, which is the direction a browser-facing allow-list must fail.
 **Tokens in localStorage.** Persistent, exfiltratable, and the default in too many tutorials. The
 price of in-memory tokens is re-login on refresh; the price of stored tokens is a session that
 survives the tab it was made in.
+
+## Amendment (2026-11): Authorization Code + PKCE replaces the password grant
+
+The migration this ADR deferred is done, in both the static UI (`web/app/oidc.js`) and the React
+dashboard (`src/api/authApi.ts`):
+
+- **The browser never sees a password.** Sign-in redirects to Keycloak's own login page with an
+  S256 `code_challenge`; the one-time `code_verifier`, `state` and `nonce` sit in `sessionStorage`
+  for that tab only, and are consumed exactly once when the callback returns.
+- **Callback checks**: `state` must match (login CSRF), the pending login must be under ten minutes
+  old, and the ID token's `nonce`, `iss` and `aud` must match (token injection and IdP mix-up). The
+  code is stripped from the address bar and history before the exchange. Post-login return paths
+  must be same-app (`/…`, never `//host`) so sign-in cannot become an open redirect.
+- **Tokens stay in memory**, as before. The access token is refreshed 30 s before expiry with a
+  rotating refresh token; a failed refresh drops to sign-in. A reload costs one redirect, which the
+  Keycloak SSO cookie answers without prompting. Sign-out calls the end-session endpoint.
+- **Realm**: `fintech-web` has direct grants and the implicit flow disabled, PKCE S256 required,
+  exact redirect URIs (`http://localhost:3001/`, `http://localhost:5173/auth/callback`), only the
+  two UI web origins, an explicit post-logout allow-list, and no `offline_access` scope. Scripts
+  moved to a separate dev-only `fintech-cli` client (password grant only, no browser flows, no web
+  origins), which must not exist in a deployed realm.
+- **Onboarding in the static UI** now happens after sign-in: a signed-in identity with no customer
+  profile (`404` from `/customers/me`) is shown the profile form, and the profile's email comes from
+  the ID token rather than a form field.
+
+Verified live against Keycloak 26.7.4 with this realm: the PKCE flow succeeds from both origins with
+`aud=fintech-api`; `fintech-web` refuses the password grant (`unauthorized_client`); an authorize
+request without a challenge, an unregistered redirect URI and a foreign post-logout URI are all
+refused; an intercepted code redeemed with the wrong verifier fails (`PKCE verification failed`),
+which also burns the code. `verify-frontend-lifecycle.sh` repeats these checks against the stack.
+
+Residual: the React dashboard's self-registration page still posts a chosen password to
+auth-service, which creates the Keycloak user. That is one request over the gateway to our own
+backend, not a token grant, but moving registration onto Keycloak's own registration flow would
+remove the last password field from the browser apps.

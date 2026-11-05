@@ -185,7 +185,10 @@ public class FeatureCollector {
         try {
             return store.find(scope, kind, subjectDigest, observationKey).isPresent();
         } catch (RuntimeException e) {
-            log.warn("Could not read {} observation; treating as unknown: {}", kind, e.toString());
+            log.warn(
+                    "Could not read {} observation; treating as unknown (exception type {})",
+                    kind,
+                    e.getClass().getSimpleName());
             return null;
         }
     }

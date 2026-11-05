@@ -75,7 +75,10 @@ public final class CustomerDtos {
             @NotBlank @Size(max = 512) String keycloakSubject,
             @NotBlank @Size(max = 200) String fullName,
             @NotNull @Past LocalDate dateOfBirth,
-            @NotBlank @Size(min = 2, max = 2) @Pattern(regexp = "[A-Za-z]{2}") String nationality,
+
+            @NotBlank @Size(min = 2, max = 2) @Pattern(regexp = "[A-Za-z]{2}")
+            String nationality,
+
             @NotBlank @Email @Size(max = 320) String email,
             @Size(max = 32) String phone,
             @NotNull @Valid AddressRequest address) {

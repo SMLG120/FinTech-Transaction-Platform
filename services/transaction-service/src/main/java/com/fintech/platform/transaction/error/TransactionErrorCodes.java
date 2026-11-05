@@ -39,6 +39,20 @@ public final class TransactionErrorCodes {
     public static final ErrorCode NOT_THE_PAYER =
             ErrorCode.of("NOT_THE_PAYER", HttpStatus.FORBIDDEN, "This transaction belongs to another customer");
 
+    /**
+     * A sandbox-only capability (self-funding, customer refunds of captured payments) was called in a
+     * deployment where {@code app.payments.sandbox-mode} is off. Real money enters through a funding
+     * rail and leaves a merchant through a dispute, never on the customer's own say-so.
+     */
+    public static final ErrorCode SANDBOX_ONLY = ErrorCode.of(
+            "SANDBOX_ONLY", HttpStatus.FORBIDDEN, "This operation is only available in sandbox deployments");
+
+    /** A captured payment is refunded by opening a dispute, not by the payer reversing it. */
+    public static final ErrorCode SETTLED_REFUND_REQUIRES_DISPUTE = ErrorCode.of(
+            "SETTLED_REFUND_REQUIRES_DISPUTE",
+            HttpStatus.CONFLICT,
+            "A settled payment cannot be reversed by the payer; open a dispute to request a refund");
+
     public static final ErrorCode TRANSACTION_INVALID_TRANSITION = ErrorCode.of(
             "TRANSACTION_INVALID_TRANSITION",
             HttpStatus.CONFLICT,

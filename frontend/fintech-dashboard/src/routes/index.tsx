@@ -1,4 +1,5 @@
 import { Route, Routes } from 'react-router-dom';
+import { AuthCallbackPage } from '../features/auth/AuthCallbackPage';
 import { LoginPage } from '../features/auth/LoginPage';
 import { RegistrationPage } from '../features/auth/RegistrationPage';
 import { CardsPage } from '../features/cards/CardsPage';
@@ -27,6 +28,7 @@ export function AppRoutes() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/auth/callback" element={<AuthCallbackPage />} />
       <Route path="/register" element={<RegistrationPage />} />
       <Route
         element={

@@ -13,13 +13,13 @@ describe('App shell', () => {
     expect(screen.getByRole('heading', { name: /sign in/i })).toBeInTheDocument();
   });
 
-  it('renders the login form with validation labels', () => {
-    render(
+  it('offers redirect sign-in and never renders a password field', () => {
+    const { container } = render(
       <MemoryRouter initialEntries={['/login']}>
         <App />
       </MemoryRouter>,
     );
-    expect(screen.getByLabelText(/email/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/password/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /sign in securely/i })).toBeInTheDocument();
+    expect(container.querySelector('input[type="password"]')).toBeNull();
   });
 });

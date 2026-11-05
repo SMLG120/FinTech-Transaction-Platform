@@ -9,5 +9,4 @@ public record CustomerProvisioningProperties(String baseUrl, long timeoutMs) {
             throw new IllegalArgumentException("platform.customer-service.base-url must be configured");
         }
     }
-
 }

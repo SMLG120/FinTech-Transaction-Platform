@@ -363,7 +363,7 @@ public class SettlementService {
     public SettlementBreak acknowledgeBreak(UUID breakId, String actor) {
         SettlementBreak found = requireBreak(breakId);
         refusingAsClosedState("cannot acknowledge break " + breakId, () -> found.acknowledge(actor, clock.instant()));
-        log.info("break {} on {} acknowledged by {}", breakId, found.getCycle().getReference(), actor);
+        log.info("break {} on {} acknowledged", breakId, found.getCycle().getReference());
         return found;
     }
 

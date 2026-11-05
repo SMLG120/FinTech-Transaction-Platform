@@ -40,8 +40,9 @@ import org.springframework.web.servlet.resource.NoResourceFoundException;
  * <p>Design rules, in priority order:
  *
  * <ol>
- *   <li><b>No stack trace ever reaches a client.</b> The fallback handler logs the full throwable
- *       server-side and returns a fixed message. Clients get a correlation id to quote instead.
+ *   <li><b>Untrusted exception text is not returned or logged.</b> Error responses are generic and
+ *       diagnostics use a correlation id, exception type, and request path rather than arbitrary
+ *       messages that can contain request data or SQL values.
  *   <li><b>Only explicitly mapped exceptions produce specific codes.</b> Anything unmapped is a
  *       500, so a new library exception cannot accidentally leak its own message.
  *   <li><b>Client errors are not logged as errors.</b> A 400 is the caller's problem and logging it
@@ -63,7 +64,7 @@ public class ApiExceptionHandler {
         ApiErrorResponse body = respond(code, exception.getMessage(), request);
 
         if (code.status().is5xxServerError()) {
-            log.error("Handled server-side error code={} path={}", code.code(), request.getRequestURI(), exception);
+            log.error("Handled server-side error code={} path={}", code.code(), request.getRequestURI());
         } else {
             log.debug("Handled client error code={} path={}", code.code(), request.getRequestURI());
         }
@@ -195,13 +196,13 @@ public class ApiExceptionHandler {
     }
 
     /**
-     * Unique-constraint violation. The driver's message names tables, columns and index definitions,
-     * so it is logged but never returned.
+     * Unique-constraint violation. Driver details can include rejected key values (including keyed
+     * indexes and client-supplied idempotency keys), so only the path is logged.
      */
     @ExceptionHandler(DataIntegrityViolationException.class)
     public ResponseEntity<ApiErrorResponse> handleDataIntegrity(
             DataIntegrityViolationException exception, HttpServletRequest request) {
-        log.info("Data integrity violation on {}", request.getRequestURI(), exception);
+        log.info("Data integrity violation on {}", request.getRequestURI());
         return ResponseEntity.status(HttpStatus.CONFLICT)
                 .body(respond(CommonErrorCodes.CONFLICT, "The request conflicts with existing data", request));
     }
@@ -209,15 +210,18 @@ public class ApiExceptionHandler {
     /**
      * The safety net.
      *
-     * <p>Whatever this catches is a bug. It is logged with the throwable so the stack trace exists
-     * somewhere, and the caller receives a correlation id and nothing else. A response body
-     * assembled from an arbitrary exception's message is how SQL fragments, file paths and library
-     * internals end up in a browser.
+     * <p>Whatever this catches is a bug. Arbitrary exception text and stack traces can contain
+     * request data, SQL values, or downstream response bodies, so the log records only a correlation
+     * id, path, and exception type. The caller receives the same correlation id and no internals.
      */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiErrorResponse> handleUnexpected(Exception exception, HttpServletRequest request) {
         String correlationId = correlationId(request);
-        log.error("Unhandled exception correlationId={} path={}", correlationId, request.getRequestURI(), exception);
+        log.error(
+                "Unhandled exception correlationId={} path={} type={}",
+                correlationId,
+                request.getRequestURI(),
+                exception.getClass().getSimpleName());
 
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(new ApiErrorResponse(
