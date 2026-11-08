@@ -1,0 +1,74 @@
+# Public deployment overlay. Used together with the root docker-compose.yml:
+#
+#   docker compose -f docker-compose.yml -f deploy/oracle/docker-compose.public.yml up -d --build
+#
+# deploy/oracle/deploy.sh does this for you after rendering deploy/oracle/generated/.
+# PUBLIC_DOMAIN comes from .env (deploy.sh writes it). Only Caddy publishes ports to the internet.
+
+services:
+  caddy:
+    image: caddy:2.10.2-alpine
+    container_name: fintech-caddy
+    restart: unless-stopped
+    networks: [fintech]
+    environment:
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:?set PUBLIC_DOMAIN (deploy.sh does this)}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/oracle/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - web-frontend
+      - dashboard
+      - api-gateway
+      - keycloak
+
+  dashboard:
+    image: fintech/dashboard:public
+    build:
+      context: .
+      dockerfile: frontend/fintech-dashboard/Dockerfile
+      args:
+        VITE_GATEWAY_URL: https://api.${PUBLIC_DOMAIN}
+        VITE_KEYCLOAK_URL: https://auth.${PUBLIC_DOMAIN}
+    container_name: fintech-dashboard
+    restart: unless-stopped
+    networks: [fintech]
+    volumes:
+      - ./deploy/oracle/generated/dashboard-security-headers.conf:/etc/nginx/snippets/security-headers.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1:8080/index.html || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  web-frontend:
+    volumes:
+      - ./deploy/oracle/generated/web-config.json:/usr/share/nginx/html/config.json:ro
+      - ./deploy/oracle/generated/web-security-headers.conf:/etc/nginx/snippets/security-headers.conf:ro
+
+  keycloak:
+    environment:
+      # The issuer every token carries, and the only hostname browsers use.
+      KC_HOSTNAME: https://auth.${PUBLIC_DOMAIN}
+      KC_PROXY_HEADERS: xforwarded
+      # auth-service calls the admin API at http://keycloak:8180 on the private network.
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+    volumes:
+      # Same target as the base file, so this replaces the local-dev realm with the rendered one.
+      - ./deploy/oracle/generated/realm:/opt/keycloak/data/import:ro
+
+  api-gateway:
+    environment:
+      KEYCLOAK_ISSUER: https://auth.${PUBLIC_DOMAIN}/realms/fintech
+      GATEWAY_CORS_ALLOWED_ORIGINS: https://app.${PUBLIC_DOMAIN},https://dash.${PUBLIC_DOMAIN}
+      # Safe only because Caddy, the sole ingress, overwrites X-Forwarded-For with the real client.
+      SERVER_FORWARD_HEADERS_STRATEGY: framework
+
+volumes:
+  caddy-data:
+  caddy-config:

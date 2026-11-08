@@ -1,0 +1,24 @@
+#cloud-config
+# Paste into OCI Console -> Create instance -> Show advanced options -> Management -> cloud-init.
+# Image: Canonical Ubuntu 24.04 (aarch64). Shape: VM.Standard.A1.Flex, 4 OCPU / 24 GB (Always Free).
+# Installs Docker, opens 80/443 in the host firewall (Oracle's Ubuntu images REJECT everything but
+# SSH by default), and clones the repository to /opt/fintech. You then run deploy.sh over SSH.
+package_update: true
+packages:
+  - docker.io
+  - docker-compose-v2
+  - docker-buildx
+  - git
+  - python3
+  - curl
+  - unattended-upgrades
+runcmd:
+  - systemctl enable --now docker
+  - usermod -aG docker ubuntu
+  # Insert ACCEPT rules ahead of Oracle's default REJECT rule, then persist them.
+  - iptables -I INPUT 5 -p tcp -m state --state NEW --dport 80 -j ACCEPT
+  - iptables -I INPUT 5 -p tcp -m state --state NEW --dport 443 -j ACCEPT
+  - iptables -I INPUT 5 -p udp --dport 443 -j ACCEPT
+  - netfilter-persistent save
+  - git clone https://github.com/SMLG120/FinTech-Transaction-Platform.git /opt/fintech
+  - chown -R ubuntu:ubuntu /opt/fintech

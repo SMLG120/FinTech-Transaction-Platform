@@ -58,3 +58,6 @@ prometheus/data/
 grafana/data/
 *.tsdb
 *.db
+
+# Rendered per-domain deployment files (deploy/oracle/render.py)
+deploy/oracle/generated/
