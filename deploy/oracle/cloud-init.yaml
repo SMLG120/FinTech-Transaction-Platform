@@ -20,5 +20,5 @@ runcmd:
   - iptables -I INPUT 5 -p tcp -m state --state NEW --dport 443 -j ACCEPT
   - iptables -I INPUT 5 -p udp --dport 443 -j ACCEPT
   - netfilter-persistent save
-  - git clone https://github.com/SMLG120/FinTech-Transaction-Platform.git /opt/fintech
+  - git clone https://github.com/SMLG120/FinTech_Transaction_Platform.git /opt/fintech
   - chown -R ubuntu:ubuntu /opt/fintech
