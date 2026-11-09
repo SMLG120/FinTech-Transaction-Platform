@@ -1,0 +1,29 @@
+# Oracle edge overlay: Caddy on the VM's public 80/443, the only ports published beyond loopback.
+# Used after deploy/docker-compose.public.yml; deploy/oracle/deploy.sh runs the full command.
+
+services:
+  caddy:
+    image: caddy:2.10.2-alpine
+    container_name: fintech-caddy
+    restart: unless-stopped
+    networks: [fintech]
+    environment:
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:?set PUBLIC_DOMAIN (deploy.sh does this)}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/oracle/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./deploy/edge.caddy:/etc/caddy/edge.caddy:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - web-frontend
+      - dashboard
+      - api-gateway
+      - keycloak
+
+volumes:
+  caddy-data:
+  caddy-config:

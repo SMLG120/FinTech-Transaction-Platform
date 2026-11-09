@@ -1,0 +1,30 @@
+# Codespaces edge: one port per public role. GitHub's port-forwarding proxy terminates TLS at
+# https://<codespace>-<port>.app.github.dev and connects to these ports over plain HTTP, so Caddy
+# issues no certificates here. Routes and their filtering live in deploy/edge.caddy.
+#
+# Only these four ports are made public (deploy/codespaces/start.sh). The base stack's own loopback
+# ports (8080, 8180, 3000, ...) are not auto-forwarded (.devcontainer/devcontainer.json), so the
+# Keycloak admin console and actuator are reachable only from inside the codespace.
+
+{
+	admin off
+	auto_https off
+}
+
+import /etc/caddy/edge.caddy
+
+:4001 {
+	import app
+}
+
+:4002 {
+	import dash
+}
+
+:4080 {
+	import api
+}
+
+:4180 {
+	import auth
+}

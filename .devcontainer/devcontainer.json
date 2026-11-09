@@ -1,0 +1,30 @@
+// GitHub Codespaces definition for the public demo. See deploy/codespaces/README.md.
+// After the codespace is created, run ./deploy/codespaces/start.sh once.
+{
+  "name": "FinTech Transaction Platform",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+  // The full stack needs about 5 GB of RAM; the 4-core machine has 16 GB.
+  "hostRequirements": {
+    "cpus": 4,
+    "memory": "16gb",
+    "storage": "32gb"
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    // Lets `gh codespace ssh` drive the codespace from a terminal.
+    "ghcr.io/devcontainers/features/sshd:1": {}
+  },
+  // deploy/render.py needs python3; scripts/bootstrap.sh needs openssl.
+  "postCreateCommand": "sudo apt-get update -qq && sudo apt-get install -y -qq python3 openssl >/dev/null",
+  "forwardPorts": [4001, 4002, 4080, 4180],
+  "portsAttributes": {
+    "4001": { "label": "Customer web UI", "onAutoForward": "silent" },
+    "4002": { "label": "React dashboard", "onAutoForward": "silent" },
+    "4080": { "label": "API gateway", "onAutoForward": "silent" },
+    "4180": { "label": "Keycloak", "onAutoForward": "silent" }
+  },
+  // Keycloak's admin console (8180), actuator (8080), Grafana (3000) and the service ports stay
+  // unforwarded. Forward one by hand from the Ports panel when you need it.
+  "otherPortsAttributes": { "onAutoForward": "ignore" }
+}

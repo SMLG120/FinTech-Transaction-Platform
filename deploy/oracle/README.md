@@ -46,9 +46,13 @@ answer over HTTPS. `deploy.sh`:
 
 1. generates every secret into `.env` (mode 0600) with `scripts/bootstrap.sh`, including the random
    demo-user password;
-2. renders `deploy/oracle/generated/` with `render.py`: the realm with public redirect URIs and web
+2. renders `deploy/generated/` with `deploy/render.py`: the realm with public redirect URIs and web
    origins, **without** the dev-only `fintech-cli` password-grant client, plus the UI configs and CSPs;
-3. starts `docker-compose.yml` together with `docker-compose.public.yml`.
+3. starts `docker-compose.yml` with the shared `deploy/docker-compose.public.yml` and this target's
+   `deploy/oracle/docker-compose.caddy.yml`.
+
+The routes and their filtering (`deploy/edge.caddy`) are shared with the
+[Codespaces target](../codespaces/README.md); only the ingress differs.
 
 **Domain:** `sslip.io` names resolve to the IP embedded in them, so `app.203-0-113-7.sslip.io` →
 `203.0.113.7` with no DNS setup. If Let's Encrypt refuses a certificate for sslip.io (shared rate
@@ -71,8 +75,8 @@ change the password, edit it in Keycloak through the SSH tunnel below.
 | Task | Command (in `/opt/fintech`) |
 |---|---|
 | Update to the latest `main` | `git pull && ./deploy/oracle/deploy.sh` |
-| Status | `docker compose -f docker-compose.yml -f deploy/oracle/docker-compose.public.yml ps` |
-| Logs | `docker compose -f docker-compose.yml -f deploy/oracle/docker-compose.public.yml logs -f --tail=100 api-gateway` |
+| Status | `docker compose -f docker-compose.yml -f deploy/docker-compose.public.yml -f deploy/oracle/docker-compose.caddy.yml ps` |
+| Logs | same, with `logs -f --tail=100 api-gateway` instead of `ps` |
 | Stop / start | `... stop` / `./deploy/oracle/deploy.sh` |
 | Grafana, Keycloak admin, Kafka UI | `ssh -L 3000:localhost:3000 -L 8180:localhost:8180 -L 8081:localhost:8081 ubuntu@<ip>` then open `http://localhost:3000` etc. |
 | Change domain | re-run `deploy.sh <new-domain>`, then follow its printed instructions to re-import the realm |

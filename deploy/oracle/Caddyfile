@@ -1,47 +1,27 @@
-# Public edge for the FinTech demo. Caddy obtains and renews Let's Encrypt certificates itself.
-# Only these four hosts are reachable from the internet; Grafana, Prometheus, Kafka UI and every
+# Oracle edge: four public hostnames, with Let's Encrypt certificates that Caddy obtains and renews
+# itself. Only these hosts are reachable from the internet; Grafana, Prometheus, Kafka UI and every
 # service port stay bound to the VM's loopback (reach them with an SSH tunnel).
-#
-# X-Forwarded-For: Caddy replaces any client-supplied value with the real client address (no
-# trusted_proxies configured), so the gateway can trust it for per-IP rate limits.
+# Routes and their filtering live in deploy/edge.caddy, shared with the other targets.
 
 {
 	# No admin API on the network.
 	admin off
 }
 
-(hardening) {
-	header {
-		Strict-Transport-Security "max-age=31536000; includeSubDomains"
-		-Server
-		-Via
-	}
-	encode zstd gzip
-}
+import /etc/caddy/edge.caddy
 
 app.{$PUBLIC_DOMAIN} {
-	import hardening
-	reverse_proxy web-frontend:8080
+	import app
 }
 
 dash.{$PUBLIC_DOMAIN} {
-	import hardening
-	reverse_proxy dashboard:8080
+	import dash
 }
 
 api.{$PUBLIC_DOMAIN} {
-	import hardening
-	# Metrics are unauthenticated by design (scraped on the private network); never public.
-	@internal path /actuator /actuator/*
-	respond @internal 404
-	reverse_proxy api-gateway:8080
+	import api
 }
 
 auth.{$PUBLIC_DOMAIN} {
-	import hardening
-	# The admin console, admin REST API and master realm are not public. auth-service reaches the
-	# admin API over the private compose network; operators use an SSH tunnel to :8180.
-	@internal path /admin /admin/* /realms/master /realms/master/* /metrics /health /health/*
-	respond @internal 404
-	reverse_proxy keycloak:8180
+	import auth
 }

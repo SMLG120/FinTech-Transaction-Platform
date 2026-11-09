@@ -59,5 +59,5 @@ grafana/data/
 *.tsdb
 *.db
 
-# Rendered per-domain deployment files (deploy/oracle/render.py)
-deploy/oracle/generated/
+# Rendered per-deployment files (deploy/render.py)
+deploy/generated/

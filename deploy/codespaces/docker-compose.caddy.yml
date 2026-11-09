@@ -1,0 +1,23 @@
+# Codespaces edge overlay: Caddy on the codespace's loopback ports 4001/4002/4080/4180, which
+# GitHub forwards publicly over HTTPS. Used after deploy/docker-compose.public.yml;
+# deploy/codespaces/start.sh runs the full command.
+
+services:
+  caddy:
+    image: caddy:2.10.2-alpine
+    container_name: fintech-caddy
+    restart: unless-stopped
+    networks: [fintech]
+    ports:
+      - "127.0.0.1:4001:4001"
+      - "127.0.0.1:4002:4002"
+      - "127.0.0.1:4080:4080"
+      - "127.0.0.1:4180:4180"
+    volumes:
+      - ./deploy/codespaces/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./deploy/edge.caddy:/etc/caddy/edge.caddy:ro
+    depends_on:
+      - web-frontend
+      - dashboard
+      - api-gateway
+      - keycloak

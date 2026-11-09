@@ -1,0 +1,54 @@
+# Edge routes shared by every deploy target. Each target's Caddyfile imports this file and maps
+# its own site addresses (hostnames on Oracle, ports on Codespaces) onto these four snippets.
+#
+# X-Forwarded-For: with no trusted_proxies configured, Caddy replaces any client-supplied value
+# with the address of whoever connected to it, so the gateway can trust the header.
+#
+# X-Forwarded-Proto is pinned to https. On Oracle Caddy terminates TLS itself and redirects plain
+# HTTP first; on Codespaces GitHub's port-forwarding proxy terminates TLS and talks plain HTTP to
+# Caddy. Either way the browser's connection is HTTPS. Keycloak relies on this: with the realm's
+# sslRequired=external it refuses a request it believes arrived over HTTP.
+
+(hardening) {
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+		-Via
+	}
+	encode zstd gzip
+}
+
+(app) {
+	import hardening
+	reverse_proxy web-frontend:8080 {
+		header_up X-Forwarded-Proto https
+	}
+}
+
+(dash) {
+	import hardening
+	reverse_proxy dashboard:8080 {
+		header_up X-Forwarded-Proto https
+	}
+}
+
+(api) {
+	import hardening
+	# Metrics are unauthenticated by design (scraped on the private network); never public.
+	@internal path /actuator /actuator/*
+	respond @internal 404
+	reverse_proxy api-gateway:8080 {
+		header_up X-Forwarded-Proto https
+	}
+}
+
+(auth) {
+	import hardening
+	# The admin console, admin REST API and master realm are not public. auth-service reaches the
+	# admin API over the private compose network; operators reach :8180 through a tunnel.
+	@internal path /admin /admin/* /realms/master /realms/master/* /metrics /health /health/*
+	respond @internal 404
+	reverse_proxy keycloak:8180 {
+		header_up X-Forwarded-Proto https
+	}
+}
