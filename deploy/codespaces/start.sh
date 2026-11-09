@@ -19,8 +19,8 @@ source deploy/lib.sh
 # also writes them to this file.
 CODESPACE_ENV=/workspaces/.codespaces/shared/.env
 if [[ -z "${CODESPACE_NAME:-}" && -r "$CODESPACE_ENV" ]]; then
-  CODESPACE_NAME="$(sed -n 's/^CODESPACE_NAME=//p' "$CODESPACE_ENV")"
-  GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN="$(sed -n 's/^GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN=//p' "$CODESPACE_ENV")"
+  CODESPACE_NAME="$(sed -n 's/^CODESPACE_NAME=//p' "$CODESPACE_ENV" | head -n 1)"
+  GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN="$(sed -n 's/^GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN=//p' "$CODESPACE_ENV" | head -n 1)"
 fi
 [[ -n "${CODESPACE_NAME:-}" && -n "${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN:-}" ]] \
   || fail "run this inside a GitHub Codespace (CODESPACE_NAME is not set)"
