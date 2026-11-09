@@ -15,6 +15,13 @@ COMPOSE=(docker compose -f docker-compose.yml -f deploy/docker-compose.public.ym
 # shellcheck source=../lib.sh
 source deploy/lib.sh
 
+# Non-login shells (e.g. `gh codespace ssh -- cmd`) lack the Codespaces variables; the platform
+# also writes them to this file.
+CODESPACE_ENV=/workspaces/.codespaces/shared/.env
+if [[ -z "${CODESPACE_NAME:-}" && -r "$CODESPACE_ENV" ]]; then
+  CODESPACE_NAME="$(sed -n 's/^CODESPACE_NAME=//p' "$CODESPACE_ENV")"
+  GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN="$(sed -n 's/^GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN=//p' "$CODESPACE_ENV")"
+fi
 [[ -n "${CODESPACE_NAME:-}" && -n "${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN:-}" ]] \
   || fail "run this inside a GitHub Codespace (CODESPACE_NAME is not set)"
 require_docker
@@ -25,6 +32,9 @@ APP="$(url 4001)"; DASH="$(url 4002)"; API="$(url 4080)"; AUTH="$(url 4180)"
 ensure_secrets
 set_public_urls "$APP" "$DASH" "$API" "$AUTH"
 start_stack
+# The 4-core machine has a 32 GB disk shared with the OS image. Build layers are not needed once
+# the images exist (the Maven cache mount is kept, so rebuilds stay fast).
+docker builder prune -f --filter type!=exec.cachemount >/dev/null 2>&1 || true
 
 step "Waiting for the stack (inside the codespace)"
 wait_for "http://127.0.0.1:4180/realms/fintech/.well-known/openid-configuration" 200
