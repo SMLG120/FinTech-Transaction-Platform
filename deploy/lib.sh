@@ -21,6 +21,7 @@ ensure_secrets() {
 # set_env KEY VALUE: insert or replace one non-secret line in .env. Prints the previous value.
 set_env() {
   local key="$1" value="$2" previous=""
+  [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || fail "refusing a multi-line value for ${key}"
   if grep -q "^${key}=" .env; then
     previous="$(grep "^${key}=" .env | cut -d= -f2-)"
     # .env is rewritten through a temp file so its 0600 mode is kept.
